@@ -5,20 +5,30 @@ project(
     meson_version: '>=1.1.1',
     default_options: [
         'warning_level=3',
-        'cpp_std=c++20',
+        # sdbusplus (asio/connection.hpp) uses std::move_only_function and
+        # requires C++23; see the pinned sdbusplus meson.build cpp_std.
+        'cpp_std=c++23',
     ],
 )
 
 sdbusplus_dep = dependency('sdbusplus')
 systemd_dep = dependency('systemd')
 
+# Boost.Asio headers only (sdbusplus::asio::object_server is header-only).
+boost_dep = dependency('boost', required: false)
+
+src_inc = include_directories('src')
+
 executable(
     'psu-nm-proxy',
     'src/main.cpp',
+    'src/ipmb_client.cpp',
     dependencies: [
         sdbusplus_dep,
         systemd_dep,
+        boost_dep,
     ],
+    include_directories: src_inc,
     install: true,
     install_dir: get_option('bindir'),
 )

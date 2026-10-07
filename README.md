@@ -20,8 +20,14 @@ This repository holds the **daemon source only**. Following ADR-0002 (and the
 - the JSON configuration,
 - any board-specific patches.
 
-No functional PSU behaviour is implemented yet; this repository exists so later
-daemon slices have a repo, a build, and a pipeline to land in.
+## Current slice
+
+The first tracer bullet (issue #15) issues a `READ_VIN` (`0x88`) PMBus read to a
+single hard-coded PSU through the Node Manager `D9h` proxy, decodes the Linear11
+response, and publishes it as `xyz.openbmc_project.Sensor.Value` at
+`/xyz/openbmc_project/sensors/voltage/PSU2_VIN`, updating once per second in
+every host power state. Slot discovery and the full sensor set follow in later
+tickets (#16, #17).
 
 ## Building
 
