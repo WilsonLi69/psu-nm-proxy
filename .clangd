@@ -1,0 +1,4 @@
+CompileFlags:
+  CompilationDatabase: "build"
+  Add: ["-isystem", "/usr/local/oecore-x86_64/sysroots/arm1176jzs-openbmc-linux-gnueabi/usr/include/c++/14.2.0/", "-isystem", "/usr/local/oecore-x86_64/sysroots/arm1176jzs-openbmc-linux-gnueabi/usr/include/c++/14.2.0/arm-openbmc-linux-gnueabi/"]
+

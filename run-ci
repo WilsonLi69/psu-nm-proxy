@@ -1,0 +1,8 @@
+#!/bin/sh
+
+set -e
+
+meson setup build --buildtype=debugoptimized \
+    -Dwerror=true -Dwarning_level=3 -Dtests=enabled
+ninja -C build
+meson test -C build --print-errorlogs
