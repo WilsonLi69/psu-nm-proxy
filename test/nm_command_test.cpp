@@ -40,3 +40,17 @@ TEST(NmCommand, RejectsShortResponse)
     const std::vector<std::uint8_t> response = {0x87, 0x01};
     EXPECT_THROW(psu::nm::stripIntelEcho(response), std::runtime_error);
 }
+
+TEST(NmCommand, AssemblesLittleEndianWord)
+{
+    const std::vector<std::uint8_t> bytes = {0x7A, 0x00};
+    EXPECT_EQ(psu::nm::wordFromLittleEndian(bytes), 0x007A);
+
+    const std::vector<std::uint8_t> offset = {0x00, 0x4B, 0xD0};
+    EXPECT_EQ(psu::nm::wordFromLittleEndian(offset, 1), 0xD04B);
+}
+
+TEST(NmCommand, RejectsShortWord)
+{
+    EXPECT_THROW(psu::nm::wordFromLittleEndian({0x7A}), std::runtime_error);
+}

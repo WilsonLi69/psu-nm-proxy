@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 #include <vector>
@@ -12,7 +13,7 @@ namespace psu::nm
 // command" data payload layout (docs/research/07-intel-me-node-manager-psu.md,
 // docs/research/10-acbel-psu-command-set.md).
 inline constexpr std::uint8_t netFn = 0x2E;
-inline constexpr std::uint8_t sendRawPmbus = 0xD9;
+inline constexpr std::uint8_t sendRawPmbusCmd = 0xD9;
 
 // D9h flags: [5:4] standard device address, [3:1] transaction type READ_WORD.
 inline constexpr std::uint8_t readWordFlags = 0x06;
@@ -53,6 +54,19 @@ inline std::vector<std::uint8_t>
             "D9h response missing Intel manufacturer-ID echo");
     }
     return {response.begin() + sizeof(intelEcho), response.end()};
+}
+
+// Assemble the little-endian 16-bit PMBus word at `offset` in `response`.
+inline std::uint16_t
+    wordFromLittleEndian(const std::vector<std::uint8_t>& response,
+                         std::size_t offset = 0)
+{
+    if (response.size() < offset + 2)
+    {
+        throw std::runtime_error("short PMBus word response");
+    }
+    return static_cast<std::uint16_t>(response[offset]) |
+           (static_cast<std::uint16_t>(response[offset + 1]) << 8);
 }
 
 } // namespace psu::nm
