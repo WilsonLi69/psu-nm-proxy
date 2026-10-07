@@ -27,7 +27,7 @@ std::vector<std::uint8_t>
                  const std::vector<std::uint8_t>& payload)
 {
     auto method = bus.new_method_call(service, path, interface, "sendRequest");
-    method.append(ipmbChannel, psu::nm::netFn, lun, psu::nm::sendRawPmbus,
+    method.append(ipmbChannel, psu::nm::netFn, lun, psu::nm::sendRawPmbusCmd,
                   payload);
 
     auto reply = bus.call(method, callTimeoutUs);

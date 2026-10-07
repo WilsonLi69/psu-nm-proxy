@@ -60,16 +60,8 @@ int main()
         {
             const auto payload = psu::nm::encodeReadWord(psuAddress8, readVin);
             const auto bytes = psu::ipmb::sendRawPmbus(*conn, payload);
-            if (bytes.size() < 2)
-            {
-                throw std::runtime_error("short READ_VIN response (" +
-                                         std::to_string(bytes.size()) +
-                                         " bytes)");
-            }
-
-            const auto word = static_cast<std::uint16_t>(bytes[0]) |
-                              (static_cast<std::uint16_t>(bytes[1]) << 8);
-            const double volts = psu::pmbus::decodeLinear11(word);
+            const double volts = psu::pmbus::decodeLinear11(
+                psu::nm::wordFromLittleEndian(bytes));
 
             sensor->set_property("Value", volts);
             status->set_property("Functional", true);
