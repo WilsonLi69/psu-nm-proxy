@@ -16,7 +16,7 @@ namespace psu::ipmb
 namespace
 {
 
-constexpr std::uint8_t ipmbChannel = 0x00; // 0 = IPMB
+constexpr std::uint8_t channel = 0x01; // 0 = IPMB; 1 = ME
 constexpr std::uint8_t lun = 0x00;
 constexpr std::uint64_t callTimeoutUs = 2'000'000; // sendRequest retries
 
@@ -27,7 +27,7 @@ std::vector<std::uint8_t>
                  const std::vector<std::uint8_t>& payload)
 {
     auto method = bus.new_method_call(service, path, interface, "sendRequest");
-    method.append(ipmbChannel, psu::nm::netFn, lun, psu::nm::sendRawPmbusCmd,
+    method.append(channel, psu::nm::netFn, lun, psu::nm::sendRawPmbusCmd,
                   payload);
 
     auto reply = bus.call(method, callTimeoutUs);
