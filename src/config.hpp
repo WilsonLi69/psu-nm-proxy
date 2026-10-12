@@ -3,6 +3,7 @@
 #include "nm_command.hpp"
 #include "sensor_set.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -32,6 +33,8 @@ struct Config
 {
     std::map<std::uint8_t, std::string> psuNames;
     std::vector<std::uint8_t> expectedSlots;
+    std::map<std::uint8_t, std::uint8_t> psuAddresses;
+    bool d7hFallbackEnabled = false;
     std::vector<std::string> sensorWhitelist = defaultSensorWhitelist();
     std::uint32_t pollIntervalMs = defaultPollIntervalMs;
     std::size_t failuresBeforeNotFunctional = defaultFailuresBeforeNotFunctional;
@@ -50,6 +53,10 @@ Config loadConfig(const std::string& path);
 
 // The published name for a slot: the configured psuNames entry, or "PSU<slot>".
 std::string nameFor(const Config& config, std::uint8_t slot);
+
+// The D7h fallback PSU addresses as slots 1..8 mapped to array indices 0..7
+// (a slot with no configured address is 0).
+std::array<std::uint8_t, 8> psuAddressBytes(const Config& config);
 
 // One PSU slot to publish, from the union of the configured expectedSlots and
 // the slots D8h discovered. An expected slot D8h did not report has no address
