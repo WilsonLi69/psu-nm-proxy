@@ -30,4 +30,24 @@ inline double decodeLinear11(std::uint16_t word)
     return std::ldexp(static_cast<double>(mantissa), exponent);
 }
 
+// Decode a PMBus Linear16 word: Value = Y * 2^N, Y unsigned, N supplied
+// separately (READ_VOUT takes N from VOUT_MODE).
+inline double decodeLinear16(std::uint16_t mantissa, int exponent)
+{
+    return std::ldexp(static_cast<double>(mantissa), exponent);
+}
+
+// Extract the signed exponent N from a VOUT_MODE (0x20) byte: MODE is [7:5],
+// the Linear16 exponent is signed [4:0]. 0x1C -> 0b11100 -> -4.
+inline int voutModeExponent(std::uint8_t voutMode)
+{
+    constexpr std::uint8_t exponentMask = 0x1F;
+    constexpr std::uint8_t exponentSign = 0x10;
+    constexpr int exponentModulus = 0x20;
+
+    const std::uint8_t raw = voutMode & exponentMask;
+    return (raw & exponentSign) ? static_cast<int>(raw) - exponentModulus
+                                : static_cast<int>(raw);
+}
+
 } // namespace psu::pmbus
