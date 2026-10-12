@@ -22,6 +22,8 @@ inline constexpr std::uint8_t setPsuConfigCmd = 0xD7;
 
 // D9h flags: [5:4] standard device address, [3:1] transaction type READ_WORD.
 inline constexpr std::uint8_t readWordFlags = 0x06;
+// BLOCK_READ transaction type (observed on the board for MFR_ID/MFR_MODEL).
+inline constexpr std::uint8_t blockReadFlags = 0x0A;
 inline constexpr std::uint8_t pmbusProtocol = 0x00;
 inline constexpr std::uint8_t writeLength = 0x01;
 inline constexpr std::uint8_t wordReadLength = 0x02;
@@ -42,6 +44,26 @@ inline std::vector<std::uint8_t> encodeReadWord(std::uint8_t psuAddr8,
         pmbusProtocol,    // PMBus
         writeLength,      // command byte is written
         wordReadLength,   // two-byte read
+        command,          // PMBus command byte
+    };
+}
+
+// Build the ten-byte D9h data payload for a PMBus BLOCK_READ (observed on
+// hardware for MFR_ID: encodeBlockRead(0xB2, 0x99, 0x10) ==
+// 57 01 00 0a B2 00 00 01 10 99). The read length is the number of bytes the
+// ME is asked to return (e.g. 0x10 = 16 covers both MFR strings).
+inline std::vector<std::uint8_t>
+    encodeBlockRead(std::uint8_t psuAddr8, std::uint8_t command,
+                    std::uint8_t readLength)
+{
+    return {
+        0x57, 0x01, 0x00, // Intel IANA 0x000157, little-endian
+        blockReadFlags,   // standard address, BLOCK_READ
+        psuAddr8,         // target PSU 8-bit SMBus address
+        0x00,             // MGPIO MUX
+        pmbusProtocol,    // PMBus
+        writeLength,      // command byte is written
+        readLength,       // caller-supplied block read length
         command,          // PMBus command byte
     };
 }

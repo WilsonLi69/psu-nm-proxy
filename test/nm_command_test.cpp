@@ -23,6 +23,33 @@ TEST(NmCommand, EncodesReadWordForSlotOne)
     EXPECT_EQ(psu::nm::encodeReadWord(0xB0, 0x8B), expected);
 }
 
+// MFR_ID/MFR_MODEL are PMBus BLOCK_READs: flags 0x0a, write length 0x01 and a
+// caller-supplied read length. Observed board probe:
+//   ... 0a <addr8> 00 00 01 10 99
+TEST(NmCommand, EncodesBlockReadForMfrId)
+{
+    const std::vector<std::uint8_t> expected = {
+        0x57, 0x01, 0x00, 0x0A, 0xB2, 0x00, 0x00, 0x01, 0x10, 0x99,
+    };
+    EXPECT_EQ(psu::nm::encodeBlockRead(0xB2, 0x99, 0x10), expected);
+}
+
+TEST(NmCommand, EncodesBlockReadForMfrModel)
+{
+    const std::vector<std::uint8_t> expected = {
+        0x57, 0x01, 0x00, 0x0A, 0xB2, 0x00, 0x00, 0x01, 0x10, 0x9A,
+    };
+    EXPECT_EQ(psu::nm::encodeBlockRead(0xB2, 0x9A, 0x10), expected);
+}
+
+TEST(NmCommand, EncodesBlockReadWithVariableReadLength)
+{
+    const std::vector<std::uint8_t> expected = {
+        0x57, 0x01, 0x00, 0x0A, 0xB0, 0x00, 0x00, 0x01, 0x20, 0x9A,
+    };
+    EXPECT_EQ(psu::nm::encodeBlockRead(0xB0, 0x9A, 0x20), expected);
+}
+
 TEST(NmCommand, StripsIntelManufacturerEcho)
 {
     const std::vector<std::uint8_t> response = {0x87, 0x01, 0x00, 0x7A, 0x00};
