@@ -1,7 +1,11 @@
 #pragma once
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <vector>
 
 namespace psu::pmbus
 {
@@ -48,6 +52,25 @@ inline int voutModeExponent(std::uint8_t voutMode)
     const std::uint8_t raw = voutMode & exponentMask;
     return (raw & exponentSign) ? static_cast<int>(raw) - exponentModulus
                                 : static_cast<int>(raw);
+}
+
+// Decode a length-prefixed PMBus ASCII block (MFR_ID / MFR_MODEL): the first
+// byte is the payload length, the following bytes are the ASCII characters.
+// Trailing bytes past the declared length are ignored.
+inline std::string decodeAscii(const std::vector<std::uint8_t>& bytes)
+{
+    if (bytes.empty())
+    {
+        throw std::runtime_error("empty PMBus ASCII block");
+    }
+
+    const std::size_t length = bytes[0];
+    if (bytes.size() < length + 1)
+    {
+        throw std::runtime_error("short PMBus ASCII block");
+    }
+
+    return {bytes.begin() + 1, bytes.begin() + 1 + length};
 }
 
 } // namespace psu::pmbus
