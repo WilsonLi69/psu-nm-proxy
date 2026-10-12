@@ -8,6 +8,7 @@ test_exe = executable(
     'sensor_test.cpp',
     'inventory_test.cpp',
     'failure_tracker_test.cpp',
+    'operational_state_test.cpp',
     'config_test.cpp',
     'threshold_test.cpp',
     '../src/config.cpp',

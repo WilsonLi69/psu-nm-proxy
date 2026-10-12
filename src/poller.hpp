@@ -3,6 +3,7 @@
 #include "failure_tracker.hpp"
 #include "ipmb_client.hpp"
 #include "nm_command.hpp"
+#include "operational_state.hpp"
 #include "pmbus.hpp"
 #include "sensor_set.hpp"
 
@@ -30,9 +31,9 @@ inline constexpr auto sensorValueInterface = "xyz.openbmc_project.Sensor.Value";
 inline constexpr auto operationalStatusInterface =
     "xyz.openbmc_project.State.Decorator.OperationalStatus";
 
-// Called when a slot's failure state crosses the threshold (either direction)
-// so the inventory publisher can flip Present/Functional (spec §5.7). Both
-// flags move together today.
+// Called whenever a slot's Present/Functional pair changes (spec §5.7):
+// Present follows the consecutive-failure tracker, while Functional
+// additionally requires a successful STATUS_WORD read reporting POWER_GOOD.
 using FunctionalSink = std::function<void(bool present, bool functional)>;
 
 // Publishes the §8 sensor set for one PSU and refreshes it every interval.
@@ -86,6 +87,8 @@ class Poller
             auto status =
                 server.add_interface(path, operationalStatusInterface);
             status->register_property("Functional", true);
+            status->register_property("State",
+                                      std::string(operationalStateEnabled));
             status->initialize();
 
             addThresholds(path, def->label);
@@ -106,26 +109,25 @@ class Poller
         }
 
         const auto props = thresholdProperties(it->second);
-        if (!props.warning.empty())
+        addThresholdInterface(path, warningThresholdInterface, props.warning);
+        addThresholdInterface(path, criticalThresholdInterface,
+                              props.critical);
+    }
+
+    void addThresholdInterface(const std::string& path,
+                               const char* interfaceName,
+                               const std::map<std::string, double>& properties)
+    {
+        if (properties.empty())
         {
-            auto iface =
-                server.add_interface(path, warningThresholdInterface);
-            for (const auto& [name, value] : props.warning)
-            {
-                iface->register_property(name, value);
-            }
-            iface->initialize();
+            return;
         }
-        if (!props.critical.empty())
+        auto iface = server.add_interface(path, interfaceName);
+        for (const auto& [name, value] : properties)
         {
-            auto iface =
-                server.add_interface(path, criticalThresholdInterface);
-            for (const auto& [name, value] : props.critical)
-            {
-                iface->register_property(name, value);
-            }
-            iface->initialize();
+            iface->register_property(name, value);
         }
+        iface->initialize();
     }
 
     std::uint16_t readWord(std::uint8_t command)
@@ -177,8 +179,9 @@ class Poller
 
         // A cycle is a failure when any D9h read failed; a clean cycle clears
         // the consecutive-failure count (spec §5.7).
-        const auto powerGood = readStatus();
-        if (readsSucceeded && powerGood.has_value())
+        const auto statusWord = readStatusWord();
+        const bool cycleOk = readsSucceeded && statusWord.has_value();
+        if (cycleOk)
         {
             tracker.recordSuccess();
         }
@@ -187,25 +190,24 @@ class Poller
             tracker.recordFailure();
         }
 
-        const bool functional = tracker.functional() && powerGood.value_or(false);
+        const auto health = slotHealth(tracker.functional(), statusWord);
         for (auto& sensor : sensors)
         {
-            sensor.status->set_property("Functional", functional);
+            sensor.status->set_property("Functional", health.functional);
+            sensor.status->set_property("State", std::string(health.state));
         }
-        publishFailureTransition();
+        publishFailureTransition(health.present, health.functional);
 
         timer.expires_after(interval);
         timer.async_wait([this](const boost::system::error_code&) { poll(); });
     }
 
-    // Returns the decoded POWER_GOOD bit, or no value when the STATUS_WORD read
-    // itself failed.
-    std::optional<bool> readStatus()
+    // Returns the decoded STATUS_WORD, or no value when the read itself failed.
+    std::optional<psu::pmbus::StatusWord> readStatusWord()
     {
         try
         {
-            return psu::pmbus::decodeStatusWord(readWord(statusWordCommand))
-                .powerGood;
+            return psu::pmbus::decodeStatusWord(readWord(statusWordCommand));
         }
         catch (const std::exception&)
         {
@@ -213,30 +215,34 @@ class Poller
         }
     }
 
-    // Emit the enabling/disabling transition once per crossing and mirror it
-    // onto the slot's inventory Present/Functional.
-    void publishFailureTransition()
+    // Emit the enabling/disabling transition once per crossing and mirror the
+    // slot's Present/Functional pair onto inventory (spec §5.7).
+    void publishFailureTransition(bool present, bool functional)
     {
-        const bool functional = tracker.functional();
-        if (functional == lastFunctional)
+        const bool trackerChanged = present != lastPresent;
+        if (!trackerChanged && functional == lastFunctional)
         {
             return;
         }
+        lastPresent = present;
         lastFunctional = functional;
 
         if (onFunctionalChange)
         {
-            onFunctionalChange(functional, functional);
+            onFunctionalChange(present, functional);
         }
 
-        if (functional)
+        if (trackerChanged)
         {
-            std::cerr << psuName << ": functional again\n";
-        }
-        else
-        {
-            std::cerr << psuName << ": not functional after "
-                      << tracker.threshold() << " consecutive failures\n";
+            if (present)
+            {
+                std::cerr << psuName << ": functional again\n";
+            }
+            else
+            {
+                std::cerr << psuName << ": not functional after "
+                          << tracker.threshold() << " consecutive failures\n";
+            }
         }
     }
 
@@ -252,6 +258,7 @@ class Poller
     std::vector<const SensorDef*> sensorDefs;
     std::map<std::string, Thresholds> thresholds;
     FunctionalSink onFunctionalChange;
+    bool lastPresent = true;
     bool lastFunctional = true;
 };
 

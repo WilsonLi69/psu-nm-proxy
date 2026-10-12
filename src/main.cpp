@@ -124,12 +124,18 @@ int main(int argc, char* argv[])
             std::vector<psu::inventory::PsuInventory> inventory;
             for (const auto& slot : resolved)
             {
-                slots.emplace_back(slot.name, slot.address8);
-
                 // Asset strings are read once at startup; a slot whose MFR_ID
-                // is unusable is published as absent (spec §5.6).
-                inventory.push_back(psu::inventory::makeInventory(
-                    slot.name, psu::inventory::readAsset(*conn, slot.address8)));
+                // is unusable is published as absent and never polled
+                // (spec §5.6). Present is then driven only by the failure
+                // tracker for slots that are actually populated.
+                const auto asset =
+                    psu::inventory::readAsset(*conn, slot.address8);
+                inventory.push_back(
+                    psu::inventory::makeInventory(slot.name, asset));
+                if (asset)
+                {
+                    slots.emplace_back(slot.name, slot.address8);
+                }
             }
 
             // Publish inventory first so each poller can flip its slot's
