@@ -1,3 +1,4 @@
+#include "inventory.hpp"
 #include "ipmb_client.hpp"
 #include "nm_command.hpp"
 #include "poller.hpp"
@@ -78,12 +79,19 @@ int main()
                 config = readPsuConfig(*conn);
             }
 
+            std::vector<psu::inventory::PsuInventory> inventory;
             for (const auto& slot : psu::nm::psuSlots(config))
             {
+                const std::string name = "PSU" + std::to_string(slot.number);
                 pollers.push_back(std::make_unique<psu::sensors::Poller>(
-                    io, *conn, server, "PSU" + std::to_string(slot.number),
-                    slot.address8, pollInterval));
+                    io, *conn, server, name, slot.address8, pollInterval));
+
+                // Asset strings are read once at startup; a slot whose MFR_ID
+                // is unusable is published as absent (spec §5.6).
+                inventory.push_back(psu::inventory::makeInventory(
+                    name, psu::inventory::readAsset(*conn, slot.address8)));
             }
+            psu::inventory::publish(server, inventory);
         }
         catch (const std::exception& e)
         {

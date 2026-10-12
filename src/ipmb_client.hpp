@@ -29,4 +29,18 @@ std::vector<std::uint8_t>
     sendRawPmbus(sdbusplus::bus_t& bus,
                  const std::vector<std::uint8_t>& payload);
 
+// As sendCommand, but a non-zero IPMI completion code is tolerated when the
+// response still carries the Intel echo + data. Some ME firmware answers the
+// MFR_ID/MFR_MODEL BLOCK_READ with completion code 0xA3 yet returns valid
+// Asset strings. A response without the echo is still rejected, and the strict
+// sendCommand/word-read path is unchanged.
+std::vector<std::uint8_t>
+    sendCommandToleratingCompletionCode(
+        sdbusplus::bus_t& bus, std::uint8_t cmd,
+        const std::vector<std::uint8_t>& data);
+
+// As sendRawPmbus, tolerating a non-zero completion code (see above).
+std::vector<std::uint8_t> sendRawPmbusToleratingCompletionCode(
+    sdbusplus::bus_t& bus, const std::vector<std::uint8_t>& payload);
+
 } // namespace psu::ipmb

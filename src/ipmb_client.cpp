@@ -20,10 +20,9 @@ constexpr std::uint8_t channel = 0x01; // 0 = IPMB; 1 = ME
 constexpr std::uint8_t lun = 0x00;
 constexpr std::uint64_t callTimeoutUs = 2'000'000; // sendRequest retries
 
-} // namespace
-
-std::vector<std::uint8_t> sendCommand(sdbusplus::bus_t& bus, std::uint8_t cmd,
-                                      const std::vector<std::uint8_t>& data)
+std::vector<std::uint8_t>
+    sendCommandImpl(sdbusplus::bus_t& bus, std::uint8_t cmd,
+                    const std::vector<std::uint8_t>& data, bool tolerateCc)
 {
     auto method = bus.new_method_call(service, path, interface, "sendRequest");
     method.append(channel, psu::nm::netFn, lun, cmd, data);
@@ -38,7 +37,7 @@ std::vector<std::uint8_t> sendCommand(sdbusplus::bus_t& bus, std::uint8_t cmd,
     std::vector<std::uint8_t> response;
     reply.read(status, rsNetFn, rsLun, rsCmd, completionCode, response);
 
-    if (status != 0 || completionCode != 0x00)
+    if (status != 0 || (!tolerateCc && completionCode != 0x00))
     {
         throw std::runtime_error(
             "IPMB sendRequest failed (status=" + std::to_string(status) +
@@ -48,11 +47,34 @@ std::vector<std::uint8_t> sendCommand(sdbusplus::bus_t& bus, std::uint8_t cmd,
     return psu::nm::stripIntelEcho(response);
 }
 
+} // namespace
+
+std::vector<std::uint8_t> sendCommand(sdbusplus::bus_t& bus, std::uint8_t cmd,
+                                      const std::vector<std::uint8_t>& data)
+{
+    return sendCommandImpl(bus, cmd, data, false);
+}
+
+std::vector<std::uint8_t>
+    sendCommandToleratingCompletionCode(
+        sdbusplus::bus_t& bus, std::uint8_t cmd,
+        const std::vector<std::uint8_t>& data)
+{
+    return sendCommandImpl(bus, cmd, data, true);
+}
+
 std::vector<std::uint8_t>
     sendRawPmbus(sdbusplus::bus_t& bus,
                  const std::vector<std::uint8_t>& payload)
 {
     return sendCommand(bus, psu::nm::sendRawPmbusCmd, payload);
+}
+
+std::vector<std::uint8_t> sendRawPmbusToleratingCompletionCode(
+    sdbusplus::bus_t& bus, const std::vector<std::uint8_t>& payload)
+{
+    return sendCommandToleratingCompletionCode(bus, psu::nm::sendRawPmbusCmd,
+                                               payload);
 }
 
 } // namespace psu::ipmb

@@ -6,6 +6,7 @@ test_exe = executable(
     'nm_command_test.cpp',
     'pmbus_test.cpp',
     'sensor_test.cpp',
+    'inventory_test.cpp',
     dependencies: [
         gtest_dep,
     ],
