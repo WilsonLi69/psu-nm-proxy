@@ -88,3 +88,52 @@ TEST(PmbusAscii, IgnoresTrailingBytes)
     const std::vector<std::uint8_t> bytes = {2, 'O', 'K', 0xFF};
     EXPECT_EQ(psu::pmbus::decodeAscii(bytes), "OK");
 }
+
+// STATUS_WORD (0x79): [6] OFF, [11] POWER_GOOD.
+TEST(PmbusStatusWord, DecodesProbedHostOffWord)
+{
+    // 0x0840 observed on the board: OFF = 1, POWER_GOOD = 1.
+    const auto status = psu::pmbus::decodeStatusWord(0x0840);
+    EXPECT_TRUE(status.off);
+    EXPECT_TRUE(status.powerGood);
+}
+
+TEST(PmbusStatusWord, DecodesAllClear)
+{
+    const auto status = psu::pmbus::decodeStatusWord(0x0000);
+    EXPECT_FALSE(status.off);
+    EXPECT_FALSE(status.powerGood);
+}
+
+TEST(PmbusStatusWord, DecodesOffWithoutPowerGood)
+{
+    const auto status = psu::pmbus::decodeStatusWord(0x0040);
+    EXPECT_TRUE(status.off);
+    EXPECT_FALSE(status.powerGood);
+}
+
+TEST(PmbusStatusWord, DecodesPowerGoodWithoutOff)
+{
+    const auto status = psu::pmbus::decodeStatusWord(0x0800);
+    EXPECT_FALSE(status.off);
+    EXPECT_TRUE(status.powerGood);
+}
+
+// Board cross-checks (#10): the decoded input/output power pairs are
+// internally consistent (VIN*IIN ~ PIN, VOUT*IOUT ~ POUT) within 5%.
+TEST(PmbusCrossCheck, InputPowerMatchesVinTimesIin)
+{
+    const double vin = psu::pmbus::decodeLinear11(0x007A);
+    const double iin = psu::pmbus::decodeLinear11(0xD04B);
+    const double pin = psu::pmbus::decodeLinear11(0xF252);
+    EXPECT_NEAR(vin * iin, pin, pin * 0.05);
+}
+
+TEST(PmbusCrossCheck, OutputPowerMatchesVoutTimesIout)
+{
+    const double vout =
+        psu::pmbus::decodeLinear16(0x00C3, psu::pmbus::voutModeExponent(0x1C));
+    const double iout = psu::pmbus::decodeLinear11(0xE855);
+    const double pout = psu::pmbus::decodeLinear11(0x0086);
+    EXPECT_NEAR(vout * iout, pout, pout * 0.05);
+}

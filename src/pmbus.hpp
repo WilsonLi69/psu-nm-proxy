@@ -73,4 +73,23 @@ inline std::string decodeAscii(const std::vector<std::uint8_t>& bytes)
     return {bytes.begin() + 1, bytes.begin() + 1 + length};
 }
 
+// Decoded STATUS_WORD (0x79) operational bits.
+struct StatusWord
+{
+    bool off;
+    bool powerGood;
+};
+
+// STATUS_WORD bit field: [6] OFF (output disabled) and [11] POWER_GOOD.
+inline StatusWord decodeStatusWord(std::uint16_t word)
+{
+    constexpr std::uint16_t offBit = 6;
+    constexpr std::uint16_t powerGoodBit = 11;
+
+    return {
+        ((word >> offBit) & 0x1) != 0,
+        ((word >> powerGoodBit) & 0x1) != 0,
+    };
+}
+
 } // namespace psu::pmbus
