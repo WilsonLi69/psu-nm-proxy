@@ -1,3 +1,4 @@
+#include "config.hpp"
 #include "inventory.hpp"
 #include "ipmb_client.hpp"
 #include "nm_command.hpp"
@@ -21,12 +22,6 @@
 namespace
 {
 
-constexpr auto pollInterval = std::chrono::seconds(1);
-
-// Consecutive D9h failures before a slot is published not functional (spec
-// §5.7). Ticket #20 will source this from the daemon config.
-constexpr std::size_t failuresBeforeNotFunctional = 3;
-
 // D7h is a fallback only and is never written by default (spec §5.3, §5.2).
 constexpr bool enableSetPsuConfigFallback = false;
 constexpr std::array<std::uint8_t, 8> configuredPsuAddresses8 = {};
@@ -37,10 +32,40 @@ std::vector<std::uint8_t> readPsuConfig(sdbusplus::bus_t& bus)
                                   psu::nm::encodeGetPsuConfig());
 }
 
+void logConfig(const psu::config::Config& config)
+{
+    std::cerr << "psu-nm-proxy: config psuNames=";
+    for (const auto& [slot, name] : config.psuNames)
+    {
+        std::cerr << slot << ":" << name << " ";
+    }
+    std::cerr << "expectedSlots=";
+    for (const auto slot : config.expectedSlots)
+    {
+        std::cerr << static_cast<int>(slot) << " ";
+    }
+    std::cerr << "sensorWhitelist=";
+    for (const auto& label : config.sensorWhitelist)
+    {
+        std::cerr << label << " ";
+    }
+    std::cerr << "pollIntervalMs=" << config.pollIntervalMs
+              << " failuresBeforeNotFunctional="
+              << config.failuresBeforeNotFunctional << "\n";
+}
+
 } // namespace
 
-int main()
+int main(int argc, char* argv[])
 {
+    const std::string configPath =
+        argc > 1 ? argv[1] : std::string(psu::config::defaultConfigPath);
+    const auto config = psu::config::loadConfig(configPath);
+    logConfig(config);
+
+    const auto pollInterval =
+        std::chrono::milliseconds(config.pollIntervalMs);
+
     boost::asio::io_context io;
     auto conn = std::make_shared<sdbusplus::asio::connection>(io);
     conn->request_name("xyz.openbmc_project.psu-nm-proxy");
@@ -75,39 +100,44 @@ int main()
     {
         try
         {
-            auto config = readPsuConfig(*conn);
+            auto psuConfig = readPsuConfig(*conn);
             if (auto fallback = psu::nm::setPsuConfigFallback(
-                    enableSetPsuConfigFallback, config, 0,
+                    enableSetPsuConfigFallback, psuConfig, 0,
                     configuredPsuAddresses8))
             {
                 psu::ipmb::sendCommand(*conn, psu::nm::setPsuConfigCmd,
                                        *fallback);
-                config = readPsuConfig(*conn);
+                psuConfig = readPsuConfig(*conn);
             }
+
+            // expectedSlots/psuNames drive discovery matching and slot naming
+            // (spec §6).
+            const auto resolved =
+                psu::config::resolveSlots(config, psu::nm::psuSlots(psuConfig));
 
             std::vector<std::pair<std::string, std::uint8_t>> slots;
             std::vector<psu::inventory::PsuInventory> inventory;
-            for (const auto& slot : psu::nm::psuSlots(config))
+            for (const auto& slot : resolved)
             {
-                const std::string name = "PSU" + std::to_string(slot.number);
-                slots.emplace_back(name, slot.address8);
+                slots.emplace_back(slot.name, slot.address8);
 
                 // Asset strings are read once at startup; a slot whose MFR_ID
                 // is unusable is published as absent (spec §5.6).
                 inventory.push_back(psu::inventory::makeInventory(
-                    name, psu::inventory::readAsset(*conn, slot.address8)));
+                    slot.name, psu::inventory::readAsset(*conn, slot.address8)));
             }
 
             // Publish inventory first so each poller can flip its slot's
             // Present/Functional on a failure-state transition (spec §5.7).
             const auto handles = psu::inventory::publish(server, inventory);
+            const auto sensorDefs = psu::config::selectSensors(config);
 
             for (const auto& [name, address8] : slots)
             {
                 const auto slotHandles = handles.at(name);
                 pollers.push_back(std::make_unique<psu::sensors::Poller>(
                     io, *conn, server, name, address8, pollInterval,
-                    failuresBeforeNotFunctional,
+                    config.failuresBeforeNotFunctional, sensorDefs,
                     [slotHandles](bool present, bool functional) {
                         psu::inventory::setPresentAndFunctional(
                             slotHandles, present, functional);

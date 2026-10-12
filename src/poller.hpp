@@ -42,11 +42,12 @@ class Poller
     Poller(boost::asio::io_context& io, sdbusplus::asio::connection& conn,
            sdbusplus::asio::object_server& server, std::string psuName,
            std::uint8_t psuAddr8, std::chrono::milliseconds interval,
-           std::size_t failuresBeforeNotFunctional = 3,
+           std::size_t failuresBeforeNotFunctional,
+           std::vector<const SensorDef*> sensorDefs,
            FunctionalSink onFunctionalChange = {}) :
         conn(conn), server(server), psuName(std::move(psuName)),
         psuAddr8(psuAddr8), interval(interval), timer(io),
-        tracker(failuresBeforeNotFunctional),
+        tracker(failuresBeforeNotFunctional), sensorDefs(std::move(sensorDefs)),
         onFunctionalChange(std::move(onFunctionalChange))
     {
         addSensors();
@@ -70,13 +71,13 @@ class Poller
 
     void addSensors()
     {
-        for (const auto& def : sensorSet)
+        for (const auto* def : sensorDefs)
         {
-            const std::string path = sensorPath(psuName, def);
+            const std::string path = sensorPath(psuName, *def);
 
             auto value = server.add_interface(path, sensorValueInterface);
             value->register_property("Value", 0.0);
-            value->register_property("Unit", unitType(def.unit));
+            value->register_property("Unit", unitType(def->unit));
             value->initialize();
 
             auto status =
@@ -85,7 +86,7 @@ class Poller
             status->initialize();
 
             sensors.push_back(
-                Published{&def, std::move(value), std::move(status)});
+                Published{def, std::move(value), std::move(status)});
         }
     }
 
@@ -210,6 +211,7 @@ class Poller
     std::vector<Published> sensors;
     int voutExponent = defaultVoutExponent;
     FailureTracker tracker;
+    std::vector<const SensorDef*> sensorDefs;
     FunctionalSink onFunctionalChange;
     bool lastFunctional = true;
 };
