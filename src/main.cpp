@@ -9,22 +9,18 @@
 #include <sdbusplus/asio/connection.hpp>
 #include <sdbusplus/asio/object_server.hpp>
 
-#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace
 {
-
-// D7h is a fallback only and is never written by default (spec §5.3, §5.2).
-constexpr bool enableSetPsuConfigFallback = false;
-constexpr std::array<std::uint8_t, 8> configuredPsuAddresses8 = {};
 
 std::vector<std::uint8_t> readPsuConfig(sdbusplus::bus_t& bus)
 {
@@ -44,6 +40,13 @@ void logConfig(const psu::config::Config& config)
     {
         std::cerr << static_cast<int>(slot) << " ";
     }
+    std::cerr << "psuAddresses=";
+    for (const auto& [slot, address] : config.psuAddresses)
+    {
+        std::cerr << static_cast<int>(slot) << ":0x" << std::hex
+                  << static_cast<int>(address) << std::dec << " ";
+    }
+    std::cerr << "d7hFallbackEnabled=" << config.d7hFallbackEnabled << " ";
     std::cerr << "sensorWhitelist=";
     for (const auto& label : config.sensorWhitelist)
     {
@@ -107,8 +110,8 @@ int main(int argc, char* argv[])
         {
             auto psuConfig = readPsuConfig(*conn);
             if (auto fallback = psu::nm::setPsuConfigFallback(
-                    enableSetPsuConfigFallback, psuConfig, 0,
-                    configuredPsuAddresses8))
+                    config.d7hFallbackEnabled, psuConfig, 0,
+                    psu::config::psuAddressBytes(config)))
             {
                 psu::ipmb::sendCommand(*conn, psu::nm::setPsuConfigCmd,
                                        *fallback);
@@ -124,12 +127,27 @@ int main(int argc, char* argv[])
             std::vector<psu::inventory::PsuInventory> inventory;
             for (const auto& slot : resolved)
             {
-                slots.emplace_back(slot.name, slot.address8);
+                // An expected slot D8h did not report has no address: publish
+                // it absent and never poll it (spec §5.6).
+                if (!slot.address8)
+                {
+                    inventory.push_back(
+                        psu::inventory::makeInventory(slot.name, std::nullopt));
+                    continue;
+                }
 
                 // Asset strings are read once at startup; a slot whose MFR_ID
-                // is unusable is published as absent (spec §5.6).
-                inventory.push_back(psu::inventory::makeInventory(
-                    slot.name, psu::inventory::readAsset(*conn, slot.address8)));
+                // is unusable is published as absent and never polled
+                // (spec §5.6). Present is then driven only by the failure
+                // tracker for slots that are actually populated.
+                const auto asset =
+                    psu::inventory::readAsset(*conn, *slot.address8);
+                inventory.push_back(
+                    psu::inventory::makeInventory(slot.name, asset));
+                if (asset)
+                {
+                    slots.emplace_back(slot.name, *slot.address8);
+                }
             }
 
             // Publish inventory first so each poller can flip its slot's

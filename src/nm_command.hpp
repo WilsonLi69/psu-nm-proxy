@@ -131,18 +131,6 @@ inline std::vector<PsuSlot>
     return slots;
 }
 
-// The 8-bit PSU addresses of the configured slots, in slot order.
-inline std::vector<std::uint8_t>
-    psuAddresses8(const std::vector<std::uint8_t>& payloadAfterEcho)
-{
-    std::vector<std::uint8_t> addresses;
-    for (const auto& slot : psuSlots(payloadAfterEcho))
-    {
-        addresses.push_back(slot.address8);
-    }
-    return addresses;
-}
-
 // Build the D7h "Set PSU Configuration" data payload from eight 8-bit PSU
 // SMBus addresses (the `[7:1]` address plus a zero mode bit).
 inline std::vector<std::uint8_t>

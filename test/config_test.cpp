@@ -3,9 +3,11 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -134,6 +136,68 @@ TEST(ConfigParsing, ExpectedSlotsDedupesAndPreservesOrder)
     EXPECT_EQ(cfg.expectedSlots, (std::vector<std::uint8_t>{2, 1}));
 }
 
+TEST(ConfigParsing, PsuAddressesAcceptNumbersAndHexStrings)
+{
+    const auto cfg = psu::config::parseConfig(R"({
+        "psuAddresses": {"1": 176, "2": "0xB2", "3": "179"}
+    })");
+
+    ASSERT_EQ(cfg.psuAddresses.size(), 3U);
+    EXPECT_EQ(cfg.psuAddresses.at(1), 0xB0);
+    EXPECT_EQ(cfg.psuAddresses.at(2), 0xB2);
+    EXPECT_EQ(cfg.psuAddresses.at(3), 0xB3);
+}
+
+TEST(ConfigParsing, PsuAddressesIgnoreInvalidEntries)
+{
+    const auto cfg = psu::config::parseConfig(R"({
+        "psuAddresses": {
+            "1": "0x100", "2": "nope", "3": 256, "4": -1,
+            "5": true, "0": "0xB2", "9": "0xB2", "6": "0xB2"
+        }
+    })");
+
+    ASSERT_EQ(cfg.psuAddresses.size(), 1U);
+    EXPECT_EQ(cfg.psuAddresses.at(6), 0xB2);
+}
+
+TEST(ConfigParsing, PsuAddressesWrongTypeIsIgnored)
+{
+    EXPECT_TRUE(psu::config::parseConfig(R"({"psuAddresses": 5})")
+                    .psuAddresses.empty());
+    EXPECT_TRUE(psu::config::parseConfig(R"({"psuAddresses": ["0xB2"]})")
+                    .psuAddresses.empty());
+}
+
+TEST(ConfigParsing, D7hFallbackDefaultsOff)
+{
+    EXPECT_FALSE(psu::config::parseConfig("{}").d7hFallbackEnabled);
+}
+
+TEST(ConfigParsing, D7hFallbackEnabledFromConfig)
+{
+    EXPECT_TRUE(psu::config::parseConfig(R"({"d7hFallbackEnabled": true})")
+                    .d7hFallbackEnabled);
+    EXPECT_FALSE(psu::config::parseConfig(R"({"d7hFallbackEnabled": false})")
+                     .d7hFallbackEnabled);
+}
+
+TEST(ConfigParsing, D7hFallbackWrongTypeUsesDefault)
+{
+    EXPECT_FALSE(psu::config::parseConfig(R"({"d7hFallbackEnabled": "yes"})")
+                     .d7hFallbackEnabled);
+}
+
+TEST(ConfigResolution, PsuAddressBytesIndexBySlot)
+{
+    Config cfg;
+    cfg.psuAddresses = {{2, 0xB2}, {1, 0xB0}};
+
+    const std::array<std::uint8_t, 8> expected = {0xB0, 0xB2, 0, 0,
+                                                  0,    0,    0, 0};
+    EXPECT_EQ(psu::config::psuAddressBytes(cfg), expected);
+}
+
 TEST(ConfigResolution, NameFallsBackToPsuSlot)
 {
     const Config cfg;
@@ -161,7 +225,7 @@ TEST(ConfigResolution, ResolvesEveryDiscoveredSlotByDefault)
     EXPECT_EQ(slots[1], (ResolvedSlot{2, 0xB2, "PSU2"}));
 }
 
-TEST(ConfigResolution, ExpectedSlotsFilterDiscoveryAndApplyNames)
+TEST(ConfigResolution, ExpectedSlotsAndDiscoveryAreUnioned)
 {
     Config cfg;
     cfg.expectedSlots = {2};
@@ -170,17 +234,25 @@ TEST(ConfigResolution, ExpectedSlotsFilterDiscoveryAndApplyNames)
 
     const auto slots = psu::config::resolveSlots(cfg, discovered);
 
-    ASSERT_EQ(slots.size(), 1U);
+    ASSERT_EQ(slots.size(), 2U);
     EXPECT_EQ(slots[0], (ResolvedSlot{2, 0xB2, "Right"}));
+    EXPECT_EQ(slots[1], (ResolvedSlot{1, 0xB0, "PSU1"}));
 }
 
-TEST(ConfigResolution, ExpectedSlotNotDiscoveredIsSkipped)
+// An expected slot that D8h does not report is still represented, with no
+// address, so it is published but never polled (spec §5.6).
+TEST(ConfigResolution, ExpectedSlotNotDiscoveredIsStillRepresented)
 {
     Config cfg;
     cfg.expectedSlots = {1, 3};
     const std::vector<PsuSlot> discovered = {{2, 0xB2}};
 
-    EXPECT_TRUE(psu::config::resolveSlots(cfg, discovered).empty());
+    const auto slots = psu::config::resolveSlots(cfg, discovered);
+
+    ASSERT_EQ(slots.size(), 3U);
+    EXPECT_EQ(slots[0], (ResolvedSlot{1, std::nullopt, "PSU1"}));
+    EXPECT_EQ(slots[1], (ResolvedSlot{3, std::nullopt, "PSU3"}));
+    EXPECT_EQ(slots[2], (ResolvedSlot{2, 0xB2, "PSU2"}));
 }
 
 TEST(ConfigSensors, DefaultWhitelistSelectsEverySection8Label)

@@ -102,6 +102,83 @@ void parseExpectedSlots(const nlohmann::json& value, Config& config)
     }
 }
 
+// An 8-bit PSU SMBus address from a JSON number or a decimal/0x string, or no
+// value when absent, out of range (0..255) or unparseable.
+std::optional<std::uint8_t> parseAddress(const nlohmann::json& value)
+{
+    std::int64_t number = 0;
+    if (value.is_number_integer())
+    {
+        try
+        {
+            number = value.get<std::int64_t>();
+        }
+        catch (const nlohmann::json::exception&)
+        {
+            return std::nullopt;
+        }
+    }
+    else if (value.is_string())
+    {
+        const auto text = value.get<std::string>();
+        if (text.empty())
+        {
+            return std::nullopt;
+        }
+        const char* begin = text.data();
+        int base = 10;
+        if (text.size() > 2 && text[0] == '0' &&
+            (text[1] == 'x' || text[1] == 'X'))
+        {
+            begin = text.data() + 2;
+            base = 16;
+        }
+        const char* end = text.data() + text.size();
+        std::int64_t parsed = 0;
+        const auto result = std::from_chars(begin, end, parsed, base);
+        if (result.ec != std::errc{} || result.ptr != end)
+        {
+            return std::nullopt;
+        }
+        number = parsed;
+    }
+    else
+    {
+        return std::nullopt;
+    }
+
+    if (number < 0 || number > 255)
+    {
+        return std::nullopt;
+    }
+    return static_cast<std::uint8_t>(number);
+}
+
+void parsePsuAddresses(const nlohmann::json& value, Config& config)
+{
+    if (!value.is_object())
+    {
+        logFallback("psuAddresses");
+        return;
+    }
+    for (const auto& [key, address] : value.items())
+    {
+        const auto slot = slotFromKey(key);
+        if (!slot || !validSlot(*slot))
+        {
+            logFallback("psuAddresses");
+            continue;
+        }
+        const auto parsed = parseAddress(address);
+        if (!parsed)
+        {
+            logFallback("psuAddresses");
+            continue;
+        }
+        config.psuAddresses[static_cast<std::uint8_t>(*slot)] = *parsed;
+    }
+}
+
 void parseSensorWhitelist(const nlohmann::json& value, Config& config)
 {
     if (!value.is_array())
@@ -248,6 +325,23 @@ Config parseConfig(std::string_view json)
         parseExpectedSlots(*it, config);
     }
 
+    if (const auto it = doc.find("psuAddresses"); it != doc.end())
+    {
+        parsePsuAddresses(*it, config);
+    }
+
+    if (const auto it = doc.find("d7hFallbackEnabled"); it != doc.end())
+    {
+        if (it->is_boolean())
+        {
+            config.d7hFallbackEnabled = it->get<bool>();
+        }
+        else
+        {
+            logFallback("d7hFallbackEnabled");
+        }
+    }
+
     if (const auto it = doc.find("sensorWhitelist"); it != doc.end())
     {
         parseSensorWhitelist(*it, config);
@@ -313,21 +407,49 @@ std::string nameFor(const Config& config, std::uint8_t slot)
     return "PSU" + std::to_string(slot);
 }
 
+std::array<std::uint8_t, 8> psuAddressBytes(const Config& config)
+{
+    std::array<std::uint8_t, 8> bytes{};
+    for (const auto& [slot, address] : config.psuAddresses)
+    {
+        if (slot >= 1 && slot <= bytes.size())
+        {
+            bytes[slot - 1] = address;
+        }
+    }
+    return bytes;
+}
+
 std::vector<ResolvedSlot>
     resolveSlots(const Config& config,
                  const std::vector<psu::nm::PsuSlot>& discovered)
 {
+    const auto addressFor = [&discovered](std::uint8_t number)
+        -> std::optional<std::uint8_t> {
+        for (const auto& slot : discovered)
+        {
+            if (slot.number == number)
+            {
+                return slot.address8;
+            }
+        }
+        return std::nullopt;
+    };
+
     std::vector<ResolvedSlot> resolved;
+    for (const auto number : config.expectedSlots)
+    {
+        resolved.push_back(
+            {number, addressFor(number), nameFor(config, number)});
+    }
     for (const auto& slot : discovered)
     {
-        if (!config.expectedSlots.empty() &&
-            std::find(config.expectedSlots.begin(), config.expectedSlots.end(),
+        if (std::find(config.expectedSlots.begin(), config.expectedSlots.end(),
                       slot.number) == config.expectedSlots.end())
         {
-            continue;
+            resolved.push_back(
+                {slot.number, slot.address8, nameFor(config, slot.number)});
         }
-        resolved.push_back(
-            {slot.number, slot.address8, nameFor(config, slot.number)});
     }
     return resolved;
 }

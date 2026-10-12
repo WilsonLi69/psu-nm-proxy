@@ -61,42 +61,54 @@ inline constexpr std::uint8_t voutModeCommand = 0x20;
 inline constexpr std::uint8_t mfrIdCommand = 0x99;
 inline constexpr std::uint8_t mfrModelCommand = 0x9A;
 
-// D-Bus path segment for a unit class (/xyz/openbmc_project/sensors/<class>).
-inline constexpr std::string_view unitClassName(UnitClass unit)
+// D-Bus attributes of a unit class: the sensors/<class> path segment and the
+// xyz.openbmc_project.Sensor.Value.Unit enum string.
+struct UnitInfo
 {
-    switch (unit)
+    std::string_view className;
+    std::string_view unitType;
+};
+
+struct UnitEntry
+{
+    UnitClass unit;
+    UnitInfo info;
+};
+
+inline constexpr std::array<UnitEntry, 5> unitTable = {{
+    {UnitClass::voltage,
+     {"voltage", "xyz.openbmc_project.Sensor.Value.Unit.Volts"}},
+    {UnitClass::current,
+     {"current", "xyz.openbmc_project.Sensor.Value.Unit.Amperes"}},
+    {UnitClass::power,
+     {"power", "xyz.openbmc_project.Sensor.Value.Unit.Watts"}},
+    {UnitClass::temperature,
+     {"temperature", "xyz.openbmc_project.Sensor.Value.Unit.DegreesC"}},
+    {UnitClass::fan, {"fan", "xyz.openbmc_project.Sensor.Value.Unit.RPMS"}},
+}};
+
+inline UnitInfo unitInfo(UnitClass unit)
+{
+    for (const auto& entry : unitTable)
     {
-        case UnitClass::voltage:
-            return "voltage";
-        case UnitClass::current:
-            return "current";
-        case UnitClass::power:
-            return "power";
-        case UnitClass::temperature:
-            return "temperature";
-        case UnitClass::fan:
-            return "fan";
+        if (entry.unit == unit)
+        {
+            return entry.info;
+        }
     }
-    return "voltage";
+    return unitTable.front().info;
+}
+
+// D-Bus path segment for a unit class (/xyz/openbmc_project/sensors/<class>).
+inline std::string_view unitClassName(UnitClass unit)
+{
+    return unitInfo(unit).className;
 }
 
 // xyz.openbmc_project.Sensor.Value.Unit enum string for a unit class.
 inline std::string unitType(UnitClass unit)
 {
-    switch (unit)
-    {
-        case UnitClass::voltage:
-            return "xyz.openbmc_project.Sensor.Value.Unit.Volts";
-        case UnitClass::current:
-            return "xyz.openbmc_project.Sensor.Value.Unit.Amperes";
-        case UnitClass::power:
-            return "xyz.openbmc_project.Sensor.Value.Unit.Watts";
-        case UnitClass::temperature:
-            return "xyz.openbmc_project.Sensor.Value.Unit.DegreesC";
-        case UnitClass::fan:
-            return "xyz.openbmc_project.Sensor.Value.Unit.RPMS";
-    }
-    return {};
+    return std::string(unitInfo(unit).unitType);
 }
 
 // Published object path: /xyz/openbmc_project/sensors/<class>/<PSU>_<LABEL>.
