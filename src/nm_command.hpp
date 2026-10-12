@@ -1,8 +1,10 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
@@ -14,6 +16,9 @@ namespace psu::nm
 // docs/research/10-acbel-psu-command-set.md).
 inline constexpr std::uint8_t netFn = 0x2E;
 inline constexpr std::uint8_t sendRawPmbusCmd = 0xD9;
+inline constexpr std::uint8_t getFwCapabilitiesCmd = 0xDE;
+inline constexpr std::uint8_t getPsuConfigCmd = 0xD8;
+inline constexpr std::uint8_t setPsuConfigCmd = 0xD7;
 
 // D9h flags: [5:4] standard device address, [3:1] transaction type READ_WORD.
 inline constexpr std::uint8_t readWordFlags = 0x06;
@@ -39,6 +44,108 @@ inline std::vector<std::uint8_t> encodeReadWord(std::uint8_t psuAddr8,
         wordReadLength,   // two-byte read
         command,          // PMBus command byte
     };
+}
+
+// Build the eleven-byte DEh "Get Intel ME FW Capabilities" data payload.
+inline std::vector<std::uint8_t> encodeGetFwCapabilities()
+{
+    return {
+        0x57, 0x01, 0x00, // Intel IANA 0x000157, little-endian
+        0x00, 0x00, 0x00, 0x00, // reserved
+        0x02,             // IPMI version 2.0
+        0x20, 0x00,       // max message size 0x0020
+        0x3F,             // BMC proxy bitmap
+    };
+}
+
+// The DEh capability byte sits at payload index 8 after the Intel echo. Its
+// bits [3:2] advertise PMBUS proxy support: 00b unsupported, 01b supported,
+// 11b supported and enabled. A missing/short byte is unsupported.
+inline bool
+    pmbusProxyEnabled(const std::vector<std::uint8_t>& payloadAfterEcho)
+{
+    if (payloadAfterEcho.size() <= 8)
+    {
+        return false;
+    }
+    const std::uint8_t proxy = (payloadAfterEcho[8] >> 2) & 0x3;
+    return proxy == 0x1 || proxy == 0x3;
+}
+
+// Build the four-byte D8h "Get PSU Configuration" data payload.
+inline std::vector<std::uint8_t> encodeGetPsuConfig(std::uint8_t domain = 0)
+{
+    return {0x57, 0x01, 0x00, domain};
+}
+
+// One configured slot from a D8h response: the 1-based slot number (payload
+// index) and its 8-bit PSU SMBus address (`byte & 0xFE`, mode bit dropped).
+struct PsuSlot
+{
+    std::uint8_t number;
+    std::uint8_t address8;
+
+    bool operator==(const PsuSlot&) const = default;
+};
+
+// Parse the non-zero slots out of a D8h response (payload index 1..8 map to
+// slots 1..8; payload index 0 is the domain).
+inline std::vector<PsuSlot>
+    psuSlots(const std::vector<std::uint8_t>& payloadAfterEcho)
+{
+    std::vector<PsuSlot> slots;
+    const std::size_t end =
+        std::min<std::size_t>(payloadAfterEcho.size(), 9);
+    for (std::size_t index = 1; index < end; ++index)
+    {
+        const std::uint8_t raw = payloadAfterEcho[index];
+        if (raw != 0)
+        {
+            slots.push_back(
+                {static_cast<std::uint8_t>(index),
+                 static_cast<std::uint8_t>(raw & 0xFE)});
+        }
+    }
+    return slots;
+}
+
+// The 8-bit PSU addresses of the configured slots, in slot order.
+inline std::vector<std::uint8_t>
+    psuAddresses8(const std::vector<std::uint8_t>& payloadAfterEcho)
+{
+    std::vector<std::uint8_t> addresses;
+    for (const auto& slot : psuSlots(payloadAfterEcho))
+    {
+        addresses.push_back(slot.address8);
+    }
+    return addresses;
+}
+
+// Build the D7h "Set PSU Configuration" data payload from eight 8-bit PSU
+// SMBus addresses (the `[7:1]` address plus a zero mode bit).
+inline std::vector<std::uint8_t>
+    encodeSetPsuConfig(std::uint8_t domain,
+                       const std::array<std::uint8_t, 8>& addrs8)
+{
+    std::vector<std::uint8_t> payload = {0x57, 0x01, 0x00, domain};
+    payload.insert(payload.end(), addrs8.begin(), addrs8.end());
+    return payload;
+}
+
+// The D7h fallback payload, or no value when it must not be written: it is
+// only ever used when explicitly enabled AND D8h reported no configured slot
+// (spec §5.3, §5.2). Off by default.
+inline std::optional<std::vector<std::uint8_t>>
+    setPsuConfigFallback(bool enabled,
+                         const std::vector<std::uint8_t>& d8PayloadAfterEcho,
+                         std::uint8_t domain,
+                         const std::array<std::uint8_t, 8>& addrs8)
+{
+    if (!enabled || !psuSlots(d8PayloadAfterEcho).empty())
+    {
+        return std::nullopt;
+    }
+    return encodeSetPsuConfig(domain, addrs8);
 }
 
 // Strip the Intel manufacturer-ID echo from a D9h response, returning the raw

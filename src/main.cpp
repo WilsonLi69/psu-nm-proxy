@@ -7,6 +7,7 @@
 #include <sdbusplus/asio/connection.hpp>
 #include <sdbusplus/asio/object_server.hpp>
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -19,18 +20,33 @@
 namespace
 {
 
-constexpr const char* sensorPath =
-    "/xyz/openbmc_project/sensors/voltage/PSU2_VIN";
+constexpr const char* sensorPathPrefix =
+    "/xyz/openbmc_project/sensors/voltage/";
 constexpr const char* sensorInterface = "xyz.openbmc_project.Sensor.Value";
 constexpr const char* statusInterface =
     "xyz.openbmc_project.State.Decorator.OperationalStatus";
 constexpr const char* voltsUnit =
     "xyz.openbmc_project.Sensor.Value.Unit.Volts";
 
-// Slot 2 is the only installed PSU; discovery is ticket #16.
-constexpr std::uint8_t psuAddress8 = 0xB2;
 constexpr std::uint8_t readVin = 0x88;
 constexpr auto pollInterval = std::chrono::seconds(1);
+
+// D7h is a fallback only and is never written by default (spec §5.3, §5.2).
+constexpr bool enableSetPsuConfigFallback = false;
+constexpr std::array<std::uint8_t, 8> configuredPsuAddresses8 = {};
+
+struct PublishedPsu
+{
+    std::uint8_t address8;
+    std::shared_ptr<sdbusplus::asio::dbus_interface> value;
+    std::shared_ptr<sdbusplus::asio::dbus_interface> status;
+};
+
+std::vector<std::uint8_t> readPsuConfig(sdbusplus::bus_t& bus)
+{
+    return psu::ipmb::sendCommand(bus, psu::nm::getPsuConfigCmd,
+                                  psu::nm::encodeGetPsuConfig());
+}
 
 } // namespace
 
@@ -42,35 +58,91 @@ int main()
 
     sdbusplus::asio::object_server server(conn);
 
-    auto sensor = server.add_interface(sensorPath, sensorInterface);
-    sensor->register_property("Value", 0.0);
-    sensor->register_property("Unit", std::string(voltsUnit));
-    sensor->initialize();
+    // Startup gate: the ME must advertise the PMBUS proxy as supported (`01b`)
+    // or supported and enabled (`11b`) before we publish (spec §5.2, §5.3).
+    bool publishEnabled = false;
+    try
+    {
+        publishEnabled = psu::nm::pmbusProxyEnabled(psu::ipmb::sendCommand(
+            *conn, psu::nm::getFwCapabilitiesCmd,
+            psu::nm::encodeGetFwCapabilities()));
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "psu-nm-proxy: DEh capabilities read failed: " << e.what()
+                  << "\n";
+    }
+    if (!publishEnabled)
+    {
+        std::cerr << "psu-nm-proxy: Intel ME PMBUS proxy not enabled; "
+                     "publishing disabled\n";
+    }
 
-    auto status = server.add_interface(sensorPath, statusInterface);
-    status->register_property("Functional", true);
-    status->initialize();
+    std::vector<PublishedPsu> psus;
+    if (publishEnabled)
+    {
+        try
+        {
+            auto config = readPsuConfig(*conn);
+            if (auto fallback = psu::nm::setPsuConfigFallback(
+                    enableSetPsuConfigFallback, config, 0,
+                    configuredPsuAddresses8))
+            {
+                psu::ipmb::sendCommand(*conn, psu::nm::setPsuConfigCmd,
+                                       *fallback);
+                config = readPsuConfig(*conn);
+            }
+
+            // Represent every configured slot; a registered-but-empty slot is
+            // published with Functional=false (inventory is ticket #18).
+            for (const auto& slot : psu::nm::psuSlots(config))
+            {
+                const std::string path = std::string(sensorPathPrefix) + "PSU" +
+                                         std::to_string(slot.number) + "_VIN";
+
+                auto value = server.add_interface(path, sensorInterface);
+                value->register_property("Value", 0.0);
+                value->register_property("Unit", std::string(voltsUnit));
+                value->initialize();
+
+                auto status = server.add_interface(path, statusInterface);
+                status->register_property("Functional", false);
+                status->initialize();
+
+                psus.push_back({slot.address8, value, status});
+            }
+        }
+        catch (const std::exception& e)
+        {
+            std::cerr << "psu-nm-proxy: D8h slot discovery failed: " << e.what()
+                      << "\n";
+        }
+    }
 
     // Poll unconditionally, in every host power state (including host-off).
     // Never gate on host state.
     boost::asio::steady_timer timer(io);
     std::function<void()> poll;
     poll = [&]() {
-        try
+        for (auto& psu : psus)
         {
-            const auto payload = psu::nm::encodeReadWord(psuAddress8, readVin);
-            const auto bytes = psu::ipmb::sendRawPmbus(*conn, payload);
-            const double volts = psu::pmbus::decodeLinear11(
-                psu::nm::wordFromLittleEndian(bytes));
+            try
+            {
+                const auto bytes = psu::ipmb::sendRawPmbus(
+                    *conn, psu::nm::encodeReadWord(psu.address8, readVin));
+                const double volts = psu::pmbus::decodeLinear11(
+                    psu::nm::wordFromLittleEndian(bytes));
 
-            sensor->set_property("Value", volts);
-            status->set_property("Functional", true);
-            std::cout << "psu-nm-proxy: READ_VIN = " << volts << " V\n";
-        }
-        catch (const std::exception& e)
-        {
-            status->set_property("Functional", false);
-            std::cerr << "psu-nm-proxy: READ_VIN failed: " << e.what() << "\n";
+                psu.value->set_property("Value", volts);
+                psu.status->set_property("Functional", true);
+            }
+            catch (const std::exception& e)
+            {
+                psu.status->set_property("Functional", false);
+                std::cerr << "psu-nm-proxy: READ_VIN @0x" << std::hex
+                          << static_cast<int>(psu.address8) << std::dec
+                          << " failed: " << e.what() << "\n";
+            }
         }
 
         timer.expires_after(pollInterval);
