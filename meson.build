@@ -13,6 +13,7 @@ project(
 
 sdbusplus_dep = dependency('sdbusplus')
 systemd_dep = dependency('systemd')
+nlohmann_json_dep = dependency('nlohmann_json')
 
 # Boost.Asio headers only (sdbusplus::asio::object_server is header-only).
 boost_dep = dependency('boost', required: false)
@@ -22,12 +23,14 @@ src_inc = include_directories('src')
 executable(
     'psu-nm-proxy',
     'src/main.cpp',
+    'src/config.cpp',
     'src/inventory.cpp',
     'src/ipmb_client.cpp',
     dependencies: [
         sdbusplus_dep,
         systemd_dep,
         boost_dep,
+        nlohmann_json_dep,
     ],
     include_directories: src_inc,
     install: true,
