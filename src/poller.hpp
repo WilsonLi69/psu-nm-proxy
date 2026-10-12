@@ -1,5 +1,6 @@
 #pragma once
 
+#include "failure_tracker.hpp"
 #include "ipmb_client.hpp"
 #include "nm_command.hpp"
 #include "pmbus.hpp"
@@ -11,9 +12,13 @@
 #include <sdbusplus/asio/object_server.hpp>
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <functional>
+#include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -24,6 +29,11 @@ inline constexpr auto sensorValueInterface = "xyz.openbmc_project.Sensor.Value";
 inline constexpr auto operationalStatusInterface =
     "xyz.openbmc_project.State.Decorator.OperationalStatus";
 
+// Called when a slot's failure state crosses the threshold (either direction)
+// so the inventory publisher can flip Present/Functional (spec §5.7). Both
+// flags move together today.
+using FunctionalSink = std::function<void(bool present, bool functional)>;
+
 // Publishes the §8 sensor set for one PSU and refreshes it every interval.
 // Unconditional polling: never gated on host power state (spec §5.4).
 class Poller
@@ -31,9 +41,13 @@ class Poller
   public:
     Poller(boost::asio::io_context& io, sdbusplus::asio::connection& conn,
            sdbusplus::asio::object_server& server, std::string psuName,
-           std::uint8_t psuAddr8, std::chrono::milliseconds interval) :
+           std::uint8_t psuAddr8, std::chrono::milliseconds interval,
+           std::size_t failuresBeforeNotFunctional = 3,
+           FunctionalSink onFunctionalChange = {}) :
         conn(conn), server(server), psuName(std::move(psuName)),
-        psuAddr8(psuAddr8), interval(interval), timer(io)
+        psuAddr8(psuAddr8), interval(interval), timer(io),
+        tracker(failuresBeforeNotFunctional),
+        onFunctionalChange(std::move(onFunctionalChange))
     {
         addSensors();
         readVoutExponent();
@@ -106,7 +120,7 @@ class Poller
 
     void poll()
     {
-        bool functional = true;
+        bool readsSucceeded = true;
 
         for (auto& sensor : sensors)
         {
@@ -118,22 +132,36 @@ class Poller
             }
             catch (const std::exception&)
             {
-                functional = false;
+                readsSucceeded = false;
             }
         }
 
-        functional = readStatus() && functional;
+        // A cycle is a failure when any D9h read failed; a clean cycle clears
+        // the consecutive-failure count (spec §5.7).
+        const auto powerGood = readStatus();
+        if (readsSucceeded && powerGood.has_value())
+        {
+            tracker.recordSuccess();
+        }
+        else
+        {
+            tracker.recordFailure();
+        }
 
+        const bool functional = tracker.functional() && powerGood.value_or(false);
         for (auto& sensor : sensors)
         {
             sensor.status->set_property("Functional", functional);
         }
+        publishFailureTransition();
 
         timer.expires_after(interval);
         timer.async_wait([this](const boost::system::error_code&) { poll(); });
     }
 
-    bool readStatus()
+    // Returns the decoded POWER_GOOD bit, or no value when the STATUS_WORD read
+    // itself failed.
+    std::optional<bool> readStatus()
     {
         try
         {
@@ -142,7 +170,34 @@ class Poller
         }
         catch (const std::exception&)
         {
-            return false;
+            return std::nullopt;
+        }
+    }
+
+    // Emit the enabling/disabling transition once per crossing and mirror it
+    // onto the slot's inventory Present/Functional.
+    void publishFailureTransition()
+    {
+        const bool functional = tracker.functional();
+        if (functional == lastFunctional)
+        {
+            return;
+        }
+        lastFunctional = functional;
+
+        if (onFunctionalChange)
+        {
+            onFunctionalChange(functional, functional);
+        }
+
+        if (functional)
+        {
+            std::cerr << psuName << ": functional again\n";
+        }
+        else
+        {
+            std::cerr << psuName << ": not functional after "
+                      << tracker.threshold() << " consecutive failures\n";
         }
     }
 
@@ -154,6 +209,9 @@ class Poller
     boost::asio::steady_timer timer;
     std::vector<Published> sensors;
     int voutExponent = defaultVoutExponent;
+    FailureTracker tracker;
+    FunctionalSink onFunctionalChange;
+    bool lastFunctional = true;
 };
 
 } // namespace psu::sensors

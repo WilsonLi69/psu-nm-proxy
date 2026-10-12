@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -12,6 +13,7 @@ namespace sdbusplus
 {
 namespace asio
 {
+class dbus_interface;
 class object_server;
 }
 namespace bus
@@ -65,6 +67,17 @@ struct PsuInventory
 
 // [forward, backward, target] association on the chassis object.
 using Association = std::tuple<std::string, std::string, std::string>;
+
+// The interfaces of a published slot that later polls update (spec §5.7). The
+// item interface carries `Present`; the status interface `Functional`.
+struct PowerSupplyHandles
+{
+    std::shared_ptr<sdbusplus::asio::dbus_interface> item;
+    std::shared_ptr<sdbusplus::asio::dbus_interface> status;
+};
+
+// Published slot handles keyed by PSU name.
+using PowerSupplyHandleMap = std::map<std::string, PowerSupplyHandles>;
 
 inline std::string powerSupplyPath(std::string_view psuName)
 {
@@ -139,7 +152,13 @@ std::optional<PsuAsset> readAsset(sdbusplus::bus_t& bus,
                                   std::uint8_t psuAddr8);
 
 // Publish the inventory objects and the chassis powered_by associations.
-void publish(sdbusplus::asio::object_server& server,
-             const std::vector<PsuInventory>& inventory);
+// Returns the per-slot handles so the poller can flip Present/Functional when a
+// slot's failure state changes (spec §5.7).
+PowerSupplyHandleMap publish(sdbusplus::asio::object_server& server,
+                             const std::vector<PsuInventory>& inventory);
+
+// Flip the Present/Functional pair on a published slot after startup.
+void setPresentAndFunctional(const PowerSupplyHandles& handles, bool present,
+                             bool functional);
 
 } // namespace psu::inventory
