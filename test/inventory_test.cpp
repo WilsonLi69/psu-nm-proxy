@@ -94,13 +94,16 @@ TEST(Inventory, ChassisCarriesOnePoweringAssociationPerPsu)
         "/xyz/openbmc_project/inventory/system/power_supply/PSU2",
     };
 
-    const auto associations = psu::inventory::chassisPoweringAssociations(paths);
+    const auto associations =
+        psu::inventory::chassisPoweringAssociations(paths);
 
     ASSERT_EQ(associations.size(), 2U);
-    EXPECT_EQ(associations[0],
-              (psu::inventory::Association{"powered_by", "powering", paths[0]}));
-    EXPECT_EQ(associations[1],
-              (psu::inventory::Association{"powered_by", "powering", paths[1]}));
+    EXPECT_EQ(
+        associations[0],
+        (psu::inventory::Association{"powered_by", "powering", paths[0]}));
+    EXPECT_EQ(
+        associations[1],
+        (psu::inventory::Association{"powered_by", "powering", paths[1]}));
 }
 
 TEST(Inventory, NoPsuMeansNoAssociations)
