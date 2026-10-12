@@ -12,6 +12,14 @@ inline constexpr auto service = "xyz.openbmc_project.Ipmi.Channel.Ipmb";
 inline constexpr auto path = "/xyz/openbmc_project/Ipmi/Channel/Ipmb";
 inline constexpr auto interface = "org.openbmc.Ipmb";
 
+// Issue one Intel Node Manager command (`cmd`) carrying `data` to the ME and
+// return the response bytes, with the Intel manufacturer-ID echo stripped.
+//
+// Throws sdbusplus::exception::exception on a D-Bus failure and
+// std::runtime_error on a non-success IPMB status / completion code.
+std::vector<std::uint8_t> sendCommand(sdbusplus::bus_t& bus, std::uint8_t cmd,
+                                      const std::vector<std::uint8_t>& data);
+
 // Issue one Node Manager D9h "Send Raw PMBUS command" carrying `payload` and
 // return the PMBus bytes, with the Intel manufacturer-ID echo stripped.
 //
