@@ -8,8 +8,11 @@ test_exe = executable(
     'sensor_test.cpp',
     'inventory_test.cpp',
     'failure_tracker_test.cpp',
+    'config_test.cpp',
+    '../src/config.cpp',
     dependencies: [
         gtest_dep,
+        nlohmann_json_dep,
     ],
     include_directories: src_inc,
     install: false,
