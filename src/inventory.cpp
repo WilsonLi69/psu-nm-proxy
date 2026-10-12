@@ -69,10 +69,11 @@ std::optional<PsuAsset> readAsset(sdbusplus::bus_t& bus, std::uint8_t psuAddr8)
     return PsuAsset{manufacturer, model};
 }
 
-void publish(sdbusplus::asio::object_server& server,
-             const std::vector<PsuInventory>& inventory)
+PowerSupplyHandleMap publish(sdbusplus::asio::object_server& server,
+                             const std::vector<PsuInventory>& inventory)
 {
     std::vector<std::string> psuPaths;
+    PowerSupplyHandleMap handles;
 
     for (const auto& psu : inventory)
     {
@@ -96,6 +97,8 @@ void publish(sdbusplus::asio::object_server& server,
         status->register_property("Functional", psu.functional);
         status->initialize();
 
+        handles.emplace(psu.name,
+                        PowerSupplyHandles{std::move(item), std::move(status)});
         psuPaths.push_back(path);
     }
 
@@ -103,6 +106,21 @@ void publish(sdbusplus::asio::object_server& server,
     chassis->register_property("Associations",
                                chassisPoweringAssociations(psuPaths));
     chassis->initialize();
+
+    return handles;
+}
+
+void setPresentAndFunctional(const PowerSupplyHandles& handles, bool present,
+                             bool functional)
+{
+    if (handles.item)
+    {
+        handles.item->set_property("Present", present);
+    }
+    if (handles.status)
+    {
+        handles.status->set_property("Functional", functional);
+    }
 }
 
 } // namespace psu::inventory

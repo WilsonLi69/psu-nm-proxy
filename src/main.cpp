@@ -10,16 +10,22 @@
 
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace
 {
 
 constexpr auto pollInterval = std::chrono::seconds(1);
+
+// Consecutive D9h failures before a slot is published not functional (spec
+// §5.7). Ticket #20 will source this from the daemon config.
+constexpr std::size_t failuresBeforeNotFunctional = 3;
 
 // D7h is a fallback only and is never written by default (spec §5.3, §5.2).
 constexpr bool enableSetPsuConfigFallback = false;
@@ -79,19 +85,34 @@ int main()
                 config = readPsuConfig(*conn);
             }
 
+            std::vector<std::pair<std::string, std::uint8_t>> slots;
             std::vector<psu::inventory::PsuInventory> inventory;
             for (const auto& slot : psu::nm::psuSlots(config))
             {
                 const std::string name = "PSU" + std::to_string(slot.number);
-                pollers.push_back(std::make_unique<psu::sensors::Poller>(
-                    io, *conn, server, name, slot.address8, pollInterval));
+                slots.emplace_back(name, slot.address8);
 
                 // Asset strings are read once at startup; a slot whose MFR_ID
                 // is unusable is published as absent (spec §5.6).
                 inventory.push_back(psu::inventory::makeInventory(
                     name, psu::inventory::readAsset(*conn, slot.address8)));
             }
-            psu::inventory::publish(server, inventory);
+
+            // Publish inventory first so each poller can flip its slot's
+            // Present/Functional on a failure-state transition (spec §5.7).
+            const auto handles = psu::inventory::publish(server, inventory);
+
+            for (const auto& [name, address8] : slots)
+            {
+                const auto slotHandles = handles.at(name);
+                pollers.push_back(std::make_unique<psu::sensors::Poller>(
+                    io, *conn, server, name, address8, pollInterval,
+                    failuresBeforeNotFunctional,
+                    [slotHandles](bool present, bool functional) {
+                        psu::inventory::setPresentAndFunctional(
+                            slotHandles, present, functional);
+                    }));
+            }
         }
         catch (const std::exception& e)
         {
