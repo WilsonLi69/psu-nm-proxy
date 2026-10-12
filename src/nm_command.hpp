@@ -170,14 +170,22 @@ inline std::optional<std::vector<std::uint8_t>>
     return encodeSetPsuConfig(domain, addrs8);
 }
 
+// True when `response` begins with the Intel manufacturer-ID echo. The ME
+// prefixes this even on responses that carry a non-zero completion code, so
+// callers can use it to tell "echo + data" apart from a genuinely failed read.
+inline bool hasIntelEcho(const std::vector<std::uint8_t>& response)
+{
+    return response.size() >= sizeof(intelEcho) &&
+           std::equal(std::begin(intelEcho), std::end(intelEcho),
+                      response.begin());
+}
+
 // Strip the Intel manufacturer-ID echo from a D9h response, returning the raw
 // PMBus payload bytes.
 inline std::vector<std::uint8_t>
     stripIntelEcho(const std::vector<std::uint8_t>& response)
 {
-    if (response.size() < sizeof(intelEcho) ||
-        !std::equal(std::begin(intelEcho), std::end(intelEcho),
-                    response.begin()))
+    if (!hasIntelEcho(response))
     {
         throw std::runtime_error(
             "D9h response missing Intel manufacturer-ID echo");
