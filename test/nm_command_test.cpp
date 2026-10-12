@@ -160,8 +160,6 @@ TEST(NmCommand, ParsesConfiguredSlots)
         {2, 0xB2},
     };
     EXPECT_EQ(psu::nm::psuSlots(payload), expected);
-    EXPECT_EQ(psu::nm::psuAddresses8(payload),
-              (std::vector<std::uint8_t>{0xB0, 0xB2}));
 }
 
 TEST(NmCommand, IgnoresUnconfiguredAndUnfilledSlots)
@@ -182,8 +180,8 @@ TEST(NmCommand, MasksPsuModeBit)
     const std::vector<std::uint8_t> payload = {
         0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     };
-    EXPECT_EQ(psu::nm::psuAddresses8(payload),
-              (std::vector<std::uint8_t>{0xFE}));
+    EXPECT_EQ(psu::nm::psuSlots(payload),
+              (std::vector<psu::nm::PsuSlot>{{1, 0xFE}}));
 }
 
 TEST(NmCommand, EncodesSetPsuConfig)
