@@ -52,28 +52,28 @@ TEST(NmCommand, EncodesBlockReadWithVariableReadLength)
 
 TEST(NmCommand, DetectsIntelManufacturerEcho)
 {
-    EXPECT_TRUE(psu::nm::hasIntelEcho({0x87, 0x01, 0x00, 0x05, 0x41}));
-    EXPECT_FALSE(psu::nm::hasIntelEcho({0x57, 0x01, 0x00, 0x05}));
-    EXPECT_FALSE(psu::nm::hasIntelEcho({0x87, 0x01}));
+    EXPECT_TRUE(psu::nm::hasIntelEcho({0x57, 0x01, 0x00, 0x05, 0x41}));
+    EXPECT_FALSE(psu::nm::hasIntelEcho({0x87, 0x01, 0x00, 0x05}));
+    EXPECT_FALSE(psu::nm::hasIntelEcho({0x57, 0x01}));
     EXPECT_FALSE(psu::nm::hasIntelEcho({}));
 }
 
 TEST(NmCommand, StripsIntelManufacturerEcho)
 {
-    const std::vector<std::uint8_t> response = {0x87, 0x01, 0x00, 0x7A, 0x00};
+    const std::vector<std::uint8_t> response = {0x57, 0x01, 0x00, 0x7A, 0x00};
     const std::vector<std::uint8_t> expected = {0x7A, 0x00};
     EXPECT_EQ(psu::nm::stripIntelEcho(response), expected);
 }
 
 TEST(NmCommand, RejectsResponseWithoutEcho)
 {
-    const std::vector<std::uint8_t> response = {0x87, 0x01, 0x7A, 0x00};
+    const std::vector<std::uint8_t> response = {0x57, 0x01, 0x7A, 0x00};
     EXPECT_THROW(psu::nm::stripIntelEcho(response), std::runtime_error);
 }
 
 TEST(NmCommand, RejectsShortResponse)
 {
-    const std::vector<std::uint8_t> response = {0x87, 0x01};
+    const std::vector<std::uint8_t> response = {0x57, 0x01};
     EXPECT_THROW(psu::nm::stripIntelEcho(response), std::runtime_error);
 }
 

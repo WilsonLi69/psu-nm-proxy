@@ -29,7 +29,7 @@ inline constexpr std::uint8_t writeLength = 0x01;
 inline constexpr std::uint8_t wordReadLength = 0x02;
 
 // Intel manufacturer-ID echo the ME prefixes to a D9h response.
-inline constexpr std::uint8_t intelEcho[] = {0x87, 0x01, 0x00};
+inline constexpr std::uint8_t intelEcho[] = {0x57, 0x01, 0x00};
 
 // Build the ten-byte D9h data payload for a PMBus READ_WORD (observed on
 // hardware: encodeReadWord(0xB2, 0x88) == 57 01 00 06 B2 00 00 01 02 88).

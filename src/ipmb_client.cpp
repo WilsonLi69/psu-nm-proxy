@@ -29,13 +29,11 @@ std::vector<std::uint8_t>
 
     auto reply = bus.call(method, callTimeoutUs);
 
-    int status = 0;
-    std::uint8_t rsNetFn = 0;
-    std::uint8_t rsLun = 0;
-    std::uint8_t rsCmd = 0;
-    std::uint8_t completionCode = 0;
-    std::vector<std::uint8_t> response;
-    reply.read(status, rsNetFn, rsLun, rsCmd, completionCode, response);
+    using IpmbReply = std::tuple<int, std::uint8_t, std::uint8_t, std::uint8_t,
+                                  std::uint8_t, std::vector<std::uint8_t>>;
+    IpmbReply replyFields;
+    reply.read(replyFields);
+    auto [status, rsNetFn, rsLun, rsCmd, completionCode, response] = replyFields;
 
     if (status != 0 || (!tolerateCc && completionCode != 0x00))
     {

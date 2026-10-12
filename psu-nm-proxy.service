@@ -1,7 +1,7 @@
 [Unit]
 Description=PSU Node Manager Proxy
-Requires=dbus.socket
-After=dbus.socket
+Requires=dbus.socket ipmb.service
+After=dbus.socket ipmb.service
 
 [Service]
 Restart=always
