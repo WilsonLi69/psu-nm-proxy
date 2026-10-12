@@ -65,7 +65,8 @@ class Poller
             value->register_property("Unit", unitType(def.unit));
             value->initialize();
 
-            auto status = server.add_interface(path, operationalStatusInterface);
+            auto status =
+                server.add_interface(path, operationalStatusInterface);
             status->register_property("Functional", true);
             status->initialize();
 
@@ -74,15 +75,19 @@ class Poller
         }
     }
 
+    std::uint16_t readWord(std::uint8_t command)
+    {
+        const auto payload = psu::nm::encodeReadWord(psuAddr8, command);
+        const auto bytes = psu::ipmb::sendRawPmbus(conn, payload);
+        return psu::nm::wordFromLittleEndian(bytes);
+    }
+
     void readVoutExponent()
     {
         try
         {
-            const auto word = psu::nm::wordFromLittleEndian(
-                psu::ipmb::sendRawPmbus(conn, psu::nm::encodeReadWord(
-                                                  psuAddr8, voutModeCommand)));
             voutExponent = psu::pmbus::voutModeExponent(
-                static_cast<std::uint8_t>(word));
+                static_cast<std::uint8_t>(readWord(voutModeCommand)));
         }
         catch (const std::exception&)
         {
@@ -107,10 +112,7 @@ class Poller
         {
             try
             {
-                const auto word = psu::nm::wordFromLittleEndian(
-                    psu::ipmb::sendRawPmbus(
-                        conn, psu::nm::encodeReadWord(psuAddr8,
-                                                      sensor.def->command)));
+                const auto word = readWord(sensor.def->command);
                 sensor.value->set_property("Value",
                                            decode(*sensor.def, word));
             }
@@ -135,10 +137,8 @@ class Poller
     {
         try
         {
-            const auto word = psu::nm::wordFromLittleEndian(
-                psu::ipmb::sendRawPmbus(conn, psu::nm::encodeReadWord(
-                                                  psuAddr8, statusWordCommand)));
-            return psu::pmbus::decodeStatusWord(word).powerGood;
+            return psu::pmbus::decodeStatusWord(readWord(statusWordCommand))
+                .powerGood;
         }
         catch (const std::exception&)
         {

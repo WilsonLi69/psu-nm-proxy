@@ -109,8 +109,9 @@ inline std::string sensorPath(std::string_view psuName, const SensorDef& def)
         }
     }
 
-    return "/xyz/openbmc_project/sensors/" + std::string(unitClassName(def.unit)) +
-           "/" + std::string(psuName) + "_" + label;
+    return "/xyz/openbmc_project/sensors/" +
+           std::string(unitClassName(def.unit)) + "/" +
+           std::string(psuName) + "_" + label;
 }
 
 // Look up a sensor definition by its §8 label, or nullptr if unknown.
