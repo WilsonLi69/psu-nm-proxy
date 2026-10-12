@@ -9,6 +9,7 @@ test_exe = executable(
     'inventory_test.cpp',
     'failure_tracker_test.cpp',
     'config_test.cpp',
+    'threshold_test.cpp',
     '../src/config.cpp',
     dependencies: [
         gtest_dep,
