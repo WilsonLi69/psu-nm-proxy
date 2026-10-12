@@ -17,6 +17,7 @@
 #include <exception>
 #include <functional>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -44,10 +45,12 @@ class Poller
            std::uint8_t psuAddr8, std::chrono::milliseconds interval,
            std::size_t failuresBeforeNotFunctional,
            std::vector<const SensorDef*> sensorDefs,
+           std::map<std::string, Thresholds> thresholds = {},
            FunctionalSink onFunctionalChange = {}) :
         conn(conn), server(server), psuName(std::move(psuName)),
         psuAddr8(psuAddr8), interval(interval), timer(io),
         tracker(failuresBeforeNotFunctional), sensorDefs(std::move(sensorDefs)),
+        thresholds(std::move(thresholds)),
         onFunctionalChange(std::move(onFunctionalChange))
     {
         addSensors();
@@ -85,8 +88,43 @@ class Poller
             status->register_property("Functional", true);
             status->initialize();
 
+            addThresholds(path, def->label);
+
             sensors.push_back(
                 Published{def, std::move(value), std::move(status)});
+        }
+    }
+
+    // Register the configured threshold interfaces on the sensor's own path
+    // (spec §5.6). A label with no configured thresholds publishes nothing.
+    void addThresholds(const std::string& path, std::string_view label)
+    {
+        const auto it = thresholds.find(std::string(label));
+        if (it == thresholds.end())
+        {
+            return;
+        }
+
+        const auto props = thresholdProperties(it->second);
+        if (!props.warning.empty())
+        {
+            auto iface =
+                server.add_interface(path, warningThresholdInterface);
+            for (const auto& [name, value] : props.warning)
+            {
+                iface->register_property(name, value);
+            }
+            iface->initialize();
+        }
+        if (!props.critical.empty())
+        {
+            auto iface =
+                server.add_interface(path, criticalThresholdInterface);
+            for (const auto& [name, value] : props.critical)
+            {
+                iface->register_property(name, value);
+            }
+            iface->initialize();
         }
     }
 
@@ -212,6 +250,7 @@ class Poller
     int voutExponent = defaultVoutExponent;
     FailureTracker tracker;
     std::vector<const SensorDef*> sensorDefs;
+    std::map<std::string, Thresholds> thresholds;
     FunctionalSink onFunctionalChange;
     bool lastFunctional = true;
 };
