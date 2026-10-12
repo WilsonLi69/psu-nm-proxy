@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -50,19 +51,21 @@ Config loadConfig(const std::string& path);
 // The published name for a slot: the configured psuNames entry, or "PSU<slot>".
 std::string nameFor(const Config& config, std::uint8_t slot);
 
-// One configured PSU slot, matched against discovery.
+// One PSU slot to publish, from the union of the configured expectedSlots and
+// the slots D8h discovered. An expected slot D8h did not report has no address
+// (address8 is empty) so it is published but never polled (spec §5.6).
 struct ResolvedSlot
 {
     std::uint8_t number;
-    std::uint8_t address8;
+    std::optional<std::uint8_t> address8;
     std::string name;
 
     bool operator==(const ResolvedSlot&) const = default;
 };
 
-// Match discovered D8h slots against the config: when expectedSlots is
-// non-empty only those slots are kept, otherwise every discovered slot; the
-// name comes from nameFor (spec §6).
+// Union the expected slots with the D8h-discovered slots: every expected slot
+// is represented (expected slots first, in config order), then any discovered
+// slot not in expectedSlots. The name comes from nameFor (spec §6).
 std::vector<ResolvedSlot>
     resolveSlots(const Config& config,
                  const std::vector<psu::nm::PsuSlot>& discovered);

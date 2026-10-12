@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -124,17 +125,26 @@ int main(int argc, char* argv[])
             std::vector<psu::inventory::PsuInventory> inventory;
             for (const auto& slot : resolved)
             {
+                // An expected slot D8h did not report has no address: publish
+                // it absent and never poll it (spec §5.6).
+                if (!slot.address8)
+                {
+                    inventory.push_back(
+                        psu::inventory::makeInventory(slot.name, std::nullopt));
+                    continue;
+                }
+
                 // Asset strings are read once at startup; a slot whose MFR_ID
                 // is unusable is published as absent and never polled
                 // (spec §5.6). Present is then driven only by the failure
                 // tracker for slots that are actually populated.
                 const auto asset =
-                    psu::inventory::readAsset(*conn, slot.address8);
+                    psu::inventory::readAsset(*conn, *slot.address8);
                 inventory.push_back(
                     psu::inventory::makeInventory(slot.name, asset));
                 if (asset)
                 {
-                    slots.emplace_back(slot.name, slot.address8);
+                    slots.emplace_back(slot.name, *slot.address8);
                 }
             }
 

@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -161,7 +162,7 @@ TEST(ConfigResolution, ResolvesEveryDiscoveredSlotByDefault)
     EXPECT_EQ(slots[1], (ResolvedSlot{2, 0xB2, "PSU2"}));
 }
 
-TEST(ConfigResolution, ExpectedSlotsFilterDiscoveryAndApplyNames)
+TEST(ConfigResolution, ExpectedSlotsAndDiscoveryAreUnioned)
 {
     Config cfg;
     cfg.expectedSlots = {2};
@@ -170,17 +171,25 @@ TEST(ConfigResolution, ExpectedSlotsFilterDiscoveryAndApplyNames)
 
     const auto slots = psu::config::resolveSlots(cfg, discovered);
 
-    ASSERT_EQ(slots.size(), 1U);
+    ASSERT_EQ(slots.size(), 2U);
     EXPECT_EQ(slots[0], (ResolvedSlot{2, 0xB2, "Right"}));
+    EXPECT_EQ(slots[1], (ResolvedSlot{1, 0xB0, "PSU1"}));
 }
 
-TEST(ConfigResolution, ExpectedSlotNotDiscoveredIsSkipped)
+// An expected slot that D8h does not report is still represented, with no
+// address, so it is published but never polled (spec §5.6).
+TEST(ConfigResolution, ExpectedSlotNotDiscoveredIsStillRepresented)
 {
     Config cfg;
     cfg.expectedSlots = {1, 3};
     const std::vector<PsuSlot> discovered = {{2, 0xB2}};
 
-    EXPECT_TRUE(psu::config::resolveSlots(cfg, discovered).empty());
+    const auto slots = psu::config::resolveSlots(cfg, discovered);
+
+    ASSERT_EQ(slots.size(), 3U);
+    EXPECT_EQ(slots[0], (ResolvedSlot{1, std::nullopt, "PSU1"}));
+    EXPECT_EQ(slots[1], (ResolvedSlot{3, std::nullopt, "PSU3"}));
+    EXPECT_EQ(slots[2], (ResolvedSlot{2, 0xB2, "PSU2"}));
 }
 
 TEST(ConfigSensors, DefaultWhitelistSelectsEverySection8Label)

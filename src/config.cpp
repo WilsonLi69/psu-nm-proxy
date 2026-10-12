@@ -317,17 +317,32 @@ std::vector<ResolvedSlot>
     resolveSlots(const Config& config,
                  const std::vector<psu::nm::PsuSlot>& discovered)
 {
+    const auto addressFor = [&discovered](std::uint8_t number)
+        -> std::optional<std::uint8_t> {
+        for (const auto& slot : discovered)
+        {
+            if (slot.number == number)
+            {
+                return slot.address8;
+            }
+        }
+        return std::nullopt;
+    };
+
     std::vector<ResolvedSlot> resolved;
+    for (const auto number : config.expectedSlots)
+    {
+        resolved.push_back(
+            {number, addressFor(number), nameFor(config, number)});
+    }
     for (const auto& slot : discovered)
     {
-        if (!config.expectedSlots.empty() &&
-            std::find(config.expectedSlots.begin(), config.expectedSlots.end(),
+        if (std::find(config.expectedSlots.begin(), config.expectedSlots.end(),
                       slot.number) == config.expectedSlots.end())
         {
-            continue;
+            resolved.push_back(
+                {slot.number, slot.address8, nameFor(config, slot.number)});
         }
-        resolved.push_back(
-            {slot.number, slot.address8, nameFor(config, slot.number)});
     }
     return resolved;
 }
