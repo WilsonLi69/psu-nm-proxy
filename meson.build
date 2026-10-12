@@ -22,6 +22,7 @@ src_inc = include_directories('src')
 executable(
     'psu-nm-proxy',
     'src/main.cpp',
+    'src/inventory.cpp',
     'src/ipmb_client.cpp',
     dependencies: [
         sdbusplus_dep,
