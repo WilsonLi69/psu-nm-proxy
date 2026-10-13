@@ -83,40 +83,27 @@ inline std::string powerSupplyPath(std::string_view psuName)
     return std::string(powerSupplyRoot) + "/" + std::string(psuName);
 }
 
-inline std::string_view pathLeaf(std::string_view path)
-{
-    const auto slash = path.rfind('/');
-    if (slash == std::string_view::npos)
-    {
-        return path;
-    }
-    return path.substr(slash + 1);
-}
-
 // Resolve the inventory object bmcweb uses as this system's chassis: among
 // candidate paths implementing a Board/Chassis interface, the one whose leaf
 // filename equals `chassisId` (bmcweb resolves the Redfish chassis id by that
-// filename). With an empty `chassisId` the sole candidate is used, so a
-// single-board system needs no config. An empty result means no association is
+// filename, see bmcweb chassis_utils). An empty result means no association is
 // published, so the powered_by association is never left on an unrelated path.
 inline std::string
     selectChassisPath(const std::vector<std::string>& candidatePaths,
                       std::string_view chassisId)
 {
-    if (!chassisId.empty())
+    for (const auto& path : candidatePaths)
     {
-        for (const auto& path : candidatePaths)
+        std::string_view leaf = path;
+        const auto slash = path.rfind('/');
+        if (slash != std::string::npos)
         {
-            if (pathLeaf(path) == chassisId)
-            {
-                return path;
-            }
+            leaf = std::string_view(path).substr(slash + 1);
         }
-        return {};
-    }
-    if (candidatePaths.size() == 1)
-    {
-        return candidatePaths.front();
+        if (!leaf.empty() && leaf == chassisId)
+        {
+            return path;
+        }
     }
     return {};
 }
@@ -192,13 +179,17 @@ inline bool usableAssetString(std::string_view value)
 std::optional<PsuAsset> readAsset(sdbusplus::bus_t& bus,
                                   std::uint8_t psuAddr8);
 
-// Publish the inventory objects and the powered_by associations on
-// `chassisPath` (the object bmcweb resolves; empty means skip the
-// associations). Returns the per-slot handles so the poller can flip
-// Present/Functional when a slot's failure state changes (spec §5.7).
+// Publish the inventory objects. Returns the per-slot handles so the poller
+// can flip Present/Functional when a slot's failure state changes (spec §5.7).
 PowerSupplyHandleMap publish(sdbusplus::asio::object_server& server,
-                             const std::vector<PsuInventory>& inventory,
-                             std::string_view chassisPath);
+                             const std::vector<PsuInventory>& inventory);
+
+// Attach the powered_by associations for `psuPaths` to `chassisPath` (the
+// inventory object bmcweb resolves). A no-op for an empty path, so no
+// association is ever left on an unrelated object (spec §5.6).
+void publishChassisAssociation(sdbusplus::asio::object_server& server,
+                               const std::vector<std::string>& psuPaths,
+                               std::string_view chassisPath);
 
 // Flip the Present/Functional pair on a published slot after startup.
 void setPresentAndFunctional(const PowerSupplyHandles& handles, bool present,

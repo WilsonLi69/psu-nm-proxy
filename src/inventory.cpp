@@ -88,8 +88,7 @@ std::vector<std::string> findBoardOrChassisPaths(sdbusplus::bus_t& bus)
 }
 
 PowerSupplyHandleMap publish(sdbusplus::asio::object_server& server,
-                             const std::vector<PsuInventory>& inventory,
-                             std::string_view chassisPath)
+                             const std::vector<PsuInventory>& inventory)
 {
     std::vector<std::string> psuPaths;
     PowerSupplyHandleMap handles;
@@ -121,17 +120,23 @@ PowerSupplyHandleMap publish(sdbusplus::asio::object_server& server,
         psuPaths.push_back(path);
     }
 
-    if (!chassisPath.empty())
+    return handles;
+}
+
+void publishChassisAssociation(sdbusplus::asio::object_server& server,
+                               const std::vector<std::string>& psuPaths,
+                               std::string_view chassisPath)
+{
+    if (chassisPath.empty())
     {
-        auto chassis =
-            server.add_interface(std::string(chassisPath),
-                                 associationInterface);
-        chassis->register_property("Associations",
-                                   chassisPoweringAssociations(psuPaths));
-        chassis->initialize();
+        return;
     }
 
-    return handles;
+    auto chassis =
+        server.add_interface(std::string(chassisPath), associationInterface);
+    chassis->register_property("Associations",
+                               chassisPoweringAssociations(psuPaths));
+    chassis->initialize();
 }
 
 void setPresentAndFunctional(const PowerSupplyHandles& handles, bool present,

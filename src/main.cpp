@@ -6,6 +6,7 @@
 
 #include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <sdbusplus/asio/connection.hpp>
 #include <sdbusplus/asio/object_server.hpp>
 
@@ -63,6 +64,50 @@ void logConfig(const psu::config::Config& config)
     std::cerr << "\n";
 }
 
+// entity-manager may not have created the Board/Chassis object yet when the
+// daemon starts, so retry the discovery the association target depends on.
+constexpr auto chassisDiscoveryRetry = std::chrono::seconds(2);
+
+void scheduleChassisAssociation(
+    boost::asio::steady_timer& timer, sdbusplus::bus_t& bus,
+    sdbusplus::asio::object_server& server,
+    const std::vector<std::string>& psuPaths, const std::string& chassisId)
+{
+    timer.expires_after(chassisDiscoveryRetry);
+    timer.async_wait(
+        [&timer, &bus, &server, psuPaths, chassisId](
+            const boost::system::error_code& ec) {
+            if (ec)
+            {
+                return;
+            }
+
+            std::string chassisPath;
+            try
+            {
+                chassisPath = psu::inventory::selectChassisPath(
+                    psu::inventory::findBoardOrChassisPaths(bus), chassisId);
+            }
+            catch (const std::exception& e)
+            {
+                std::cerr << "psu-nm-proxy: Board/Chassis discovery failed: "
+                          << e.what() << "\n";
+            }
+
+            if (chassisPath.empty())
+            {
+                scheduleChassisAssociation(timer, bus, server, psuPaths,
+                                           chassisId);
+                return;
+            }
+
+            psu::inventory::publishChassisAssociation(server, psuPaths,
+                                                      chassisPath);
+            std::cerr << "psu-nm-proxy: powered_by associations on "
+                      << chassisPath << "\n";
+        });
+}
+
 } // namespace
 
 int main(int argc, char* argv[])
@@ -80,6 +125,10 @@ int main(int argc, char* argv[])
     conn->request_name("xyz.openbmc_project.psu-nm-proxy");
 
     sdbusplus::asio::object_server server(conn);
+
+    // Retries chassis discovery until entity-manager has published the
+    // Board/Chassis object the powered_by association attaches to.
+    boost::asio::steady_timer chassisTimer(io);
 
     // Startup gate: the ME must advertise the PMBUS proxy as supported (`01b`)
     // or supported and enabled (`11b`) before we publish (spec §5.2, §5.3).
@@ -151,11 +200,23 @@ int main(int argc, char* argv[])
                 }
             }
 
+            // Publish inventory first so each poller can flip its slot's
+            // Present/Functional on a failure-state transition (spec §5.7).
+            const auto handles = psu::inventory::publish(server, inventory);
+            const auto sensorDefs = psu::config::selectSensors(config);
+
             // bmcweb builds the Redfish PowerSupplies collection by resolving
             // the chassis id (the object leaf) against a Board/Chassis object,
             // then following that object's powered_by association. Attach the
             // association to that discovered object, never to a hard-coded
-            // path, so bmcweb can find the PSUs (spec §5.6).
+            // path (spec §5.6).
+            std::vector<std::string> psuPaths;
+            psuPaths.reserve(inventory.size());
+            for (const auto& psu : inventory)
+            {
+                psuPaths.push_back(psu::inventory::powerSupplyPath(psu.name));
+            }
+
             std::string chassisPath;
             try
             {
@@ -170,22 +231,27 @@ int main(int argc, char* argv[])
             }
             if (chassisPath.empty())
             {
-                std::cerr << "psu-nm-proxy: no Board/Chassis object for "
-                             "chassisId '"
-                          << config.chassisId
-                          << "'; not publishing PSU associations\n";
+                if (config.chassisId.empty())
+                {
+                    std::cerr << "psu-nm-proxy: chassisId not configured; not "
+                                 "publishing PSU associations\n";
+                }
+                else
+                {
+                    std::cerr << "psu-nm-proxy: no Board/Chassis object for "
+                                 "chassisId '"
+                              << config.chassisId << "' yet; retrying\n";
+                    scheduleChassisAssociation(chassisTimer, *conn, server,
+                                               psuPaths, config.chassisId);
+                }
             }
             else
             {
+                psu::inventory::publishChassisAssociation(server, psuPaths,
+                                                          chassisPath);
                 std::cerr << "psu-nm-proxy: powered_by associations on "
                           << chassisPath << "\n";
             }
-
-            // Publish inventory first so each poller can flip its slot's
-            // Present/Functional on a failure-state transition (spec §5.7).
-            const auto handles =
-                psu::inventory::publish(server, inventory, chassisPath);
-            const auto sensorDefs = psu::config::selectSensors(config);
 
             for (const auto& [name, address8] : slots)
             {

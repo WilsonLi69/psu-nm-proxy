@@ -47,21 +47,10 @@ TEST(Inventory, NoChassisPathWhenNoFilenameMatches)
         psu::inventory::selectChassisPath(candidates, "custom_board").empty());
 }
 
-TEST(Inventory, FallsBackToSoleCandidateWhenNoChassisId)
+TEST(Inventory, NoChassisPathWhenChassisIdEmpty)
 {
     const std::vector<std::string> candidates = {
         "/xyz/openbmc_project/inventory/system/board/custom_board",
-    };
-
-    EXPECT_EQ(psu::inventory::selectChassisPath(candidates, ""),
-              candidates.front());
-}
-
-TEST(Inventory, NoChassisPathWhenNoIdAndMultipleCandidates)
-{
-    const std::vector<std::string> candidates = {
-        "/xyz/openbmc_project/inventory/system/board/custom_board",
-        "/xyz/openbmc_project/inventory/system/board/other",
     };
 
     EXPECT_TRUE(psu::inventory::selectChassisPath(candidates, "").empty());
