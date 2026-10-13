@@ -1,5 +1,7 @@
 #pragma once
 
+#include <sdbusplus/bus.hpp>
+
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -9,19 +11,11 @@
 #include <tuple>
 #include <vector>
 
-namespace sdbusplus
-{
-namespace asio
+namespace sdbusplus::asio
 {
 class dbus_interface;
 class object_server;
-}
-namespace bus
-{
-class bus;
-}
-using bus_t = bus::bus;
-} // namespace sdbusplus
+} // namespace sdbusplus::asio
 
 namespace psu::inventory
 {
