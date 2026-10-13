@@ -31,10 +31,15 @@ inline constexpr auto operationalStatusInterface =
 inline constexpr auto associationInterface =
     "xyz.openbmc_project.Association.Definitions";
 
+// The interfaces bmcweb resolves a Redfish chassis id against before following
+// that object's powered_by association (see bmcweb chassisInterfaces).
+inline constexpr auto boardInterface =
+    "xyz.openbmc_project.Inventory.Item.Board";
+inline constexpr auto chassisItemInterface =
+    "xyz.openbmc_project.Inventory.Item.Chassis";
+
 inline constexpr auto powerSupplyRoot =
     "/xyz/openbmc_project/inventory/system/power_supply";
-inline constexpr auto chassisPath =
-    "/xyz/openbmc_project/inventory/system/chassis";
 
 // The Asset strings read once from a slot's MFR_ID / MFR_MODEL.
 struct PsuAsset
@@ -77,6 +82,48 @@ inline std::string powerSupplyPath(std::string_view psuName)
 {
     return std::string(powerSupplyRoot) + "/" + std::string(psuName);
 }
+
+inline std::string_view pathLeaf(std::string_view path)
+{
+    const auto slash = path.rfind('/');
+    if (slash == std::string_view::npos)
+    {
+        return path;
+    }
+    return path.substr(slash + 1);
+}
+
+// Resolve the inventory object bmcweb uses as this system's chassis: among
+// candidate paths implementing a Board/Chassis interface, the one whose leaf
+// filename equals `chassisId` (bmcweb resolves the Redfish chassis id by that
+// filename). With an empty `chassisId` the sole candidate is used, so a
+// single-board system needs no config. An empty result means no association is
+// published, so the powered_by association is never left on an unrelated path.
+inline std::string
+    selectChassisPath(const std::vector<std::string>& candidatePaths,
+                      std::string_view chassisId)
+{
+    if (!chassisId.empty())
+    {
+        for (const auto& path : candidatePaths)
+        {
+            if (pathLeaf(path) == chassisId)
+            {
+                return path;
+            }
+        }
+        return {};
+    }
+    if (candidatePaths.size() == 1)
+    {
+        return candidatePaths.front();
+    }
+    return {};
+}
+
+// The Board/Chassis object paths under the inventory root, via the
+// ObjectMapper. Throws on a D-Bus failure.
+std::vector<std::string> findBoardOrChassisPaths(sdbusplus::bus_t& bus);
 
 inline PsuInventory
     makeInventory(std::string name, const std::optional<PsuAsset>& asset)
@@ -145,11 +192,13 @@ inline bool usableAssetString(std::string_view value)
 std::optional<PsuAsset> readAsset(sdbusplus::bus_t& bus,
                                   std::uint8_t psuAddr8);
 
-// Publish the inventory objects and the chassis powered_by associations.
-// Returns the per-slot handles so the poller can flip Present/Functional when a
-// slot's failure state changes (spec §5.7).
+// Publish the inventory objects and the powered_by associations on
+// `chassisPath` (the object bmcweb resolves; empty means skip the
+// associations). Returns the per-slot handles so the poller can flip
+// Present/Functional when a slot's failure state changes (spec §5.7).
 PowerSupplyHandleMap publish(sdbusplus::asio::object_server& server,
-                             const std::vector<PsuInventory>& inventory);
+                             const std::vector<PsuInventory>& inventory,
+                             std::string_view chassisPath);
 
 // Flip the Present/Functional pair on a published slot after startup.
 void setPresentAndFunctional(const PowerSupplyHandles& handles, bool present,

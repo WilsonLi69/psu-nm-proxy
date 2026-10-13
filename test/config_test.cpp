@@ -188,6 +188,28 @@ TEST(ConfigParsing, D7hFallbackWrongTypeUsesDefault)
                      .d7hFallbackEnabled);
 }
 
+TEST(ConfigParsing, ChassisIdDefaultsToEmpty)
+{
+    EXPECT_TRUE(psu::config::parseConfig("{}").chassisId.empty());
+}
+
+TEST(ConfigParsing, ChassisIdFromConfig)
+{
+    EXPECT_EQ(psu::config::parseConfig(R"({"chassisId": "custom_board"})")
+                  .chassisId,
+              "custom_board");
+}
+
+TEST(ConfigParsing, ChassisIdWrongTypeOrUnsafeFallsBackToEmpty)
+{
+    EXPECT_TRUE(
+        psu::config::parseConfig(R"({"chassisId": 5})").chassisId.empty());
+    EXPECT_TRUE(
+        psu::config::parseConfig(R"({"chassisId": ""})").chassisId.empty());
+    EXPECT_TRUE(psu::config::parseConfig(R"({"chassisId": "a/b"})")
+                    .chassisId.empty());
+}
+
 TEST(ConfigResolution, PsuAddressBytesIndexBySlot)
 {
     Config cfg;

@@ -26,7 +26,8 @@ std::vector<std::string> defaultSensorWhitelist();
 
 // Resolved configuration. Omitted fields keep their defaults: psuNames is empty
 // (each slot falls back to "PSU<slot>"), expectedSlots is empty (all discovered
-// slots), sensorWhitelist is the full §8 set, pollIntervalMs 1000,
+// slots), chassisId is empty (the sole Board/Chassis object is used when there
+// is exactly one), sensorWhitelist is the full §8 set, pollIntervalMs 1000,
 // failuresBeforeNotFunctional 3, and thresholds empty (no D-Bus threshold
 // properties published).
 struct Config
@@ -34,6 +35,7 @@ struct Config
     std::map<std::uint8_t, std::string> psuNames;
     std::vector<std::uint8_t> expectedSlots;
     std::map<std::uint8_t, std::uint8_t> psuAddresses;
+    std::string chassisId;
     bool d7hFallbackEnabled = false;
     std::vector<std::string> sensorWhitelist = defaultSensorWhitelist();
     std::uint32_t pollIntervalMs = defaultPollIntervalMs;

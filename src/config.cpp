@@ -179,6 +179,26 @@ void parsePsuAddresses(const nlohmann::json& value, Config& config)
     }
 }
 
+// A D-Bus object leaf / Redfish chassis id: non-empty and not a path (no '/').
+bool validChassisId(std::string_view value)
+{
+    return !value.empty() && value.find('/') == std::string_view::npos;
+}
+
+void parseChassisId(const nlohmann::json& value, Config& config)
+{
+    if (value.is_string())
+    {
+        const auto id = value.get<std::string>();
+        if (validChassisId(id))
+        {
+            config.chassisId = id;
+            return;
+        }
+    }
+    logFallback("chassisId");
+}
+
 void parseSensorWhitelist(const nlohmann::json& value, Config& config)
 {
     if (!value.is_array())
@@ -328,6 +348,11 @@ Config parseConfig(std::string_view json)
     if (const auto it = doc.find("psuAddresses"); it != doc.end())
     {
         parsePsuAddresses(*it, config);
+    }
+
+    if (const auto it = doc.find("chassisId"); it != doc.end())
+    {
+        parseChassisId(*it, config);
     }
 
     if (const auto it = doc.find("d7hFallbackEnabled"); it != doc.end())

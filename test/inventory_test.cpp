@@ -20,8 +20,57 @@ TEST(Inventory, InterfaceAndPathConstants)
               "xyz.openbmc_project.State.Decorator.OperationalStatus");
     EXPECT_EQ(psu::inventory::associationInterface,
               "xyz.openbmc_project.Association.Definitions");
-    EXPECT_EQ(psu::inventory::chassisPath,
-              "/xyz/openbmc_project/inventory/system/chassis");
+    EXPECT_EQ(psu::inventory::boardInterface,
+              "xyz.openbmc_project.Inventory.Item.Board");
+    EXPECT_EQ(psu::inventory::chassisItemInterface,
+              "xyz.openbmc_project.Inventory.Item.Chassis");
+}
+
+TEST(Inventory, SelectsChassisPathByMatchingFilename)
+{
+    const std::vector<std::string> candidates = {
+        "/xyz/openbmc_project/inventory/system/chassis",
+        "/xyz/openbmc_project/inventory/system/board/custom_board",
+    };
+
+    EXPECT_EQ(psu::inventory::selectChassisPath(candidates, "custom_board"),
+              "/xyz/openbmc_project/inventory/system/board/custom_board");
+}
+
+TEST(Inventory, NoChassisPathWhenNoFilenameMatches)
+{
+    const std::vector<std::string> candidates = {
+        "/xyz/openbmc_project/inventory/system/chassis",
+    };
+
+    EXPECT_TRUE(
+        psu::inventory::selectChassisPath(candidates, "custom_board").empty());
+}
+
+TEST(Inventory, FallsBackToSoleCandidateWhenNoChassisId)
+{
+    const std::vector<std::string> candidates = {
+        "/xyz/openbmc_project/inventory/system/board/custom_board",
+    };
+
+    EXPECT_EQ(psu::inventory::selectChassisPath(candidates, ""),
+              candidates.front());
+}
+
+TEST(Inventory, NoChassisPathWhenNoIdAndMultipleCandidates)
+{
+    const std::vector<std::string> candidates = {
+        "/xyz/openbmc_project/inventory/system/board/custom_board",
+        "/xyz/openbmc_project/inventory/system/board/other",
+    };
+
+    EXPECT_TRUE(psu::inventory::selectChassisPath(candidates, "").empty());
+}
+
+TEST(Inventory, NoChassisPathWhenNoCandidates)
+{
+    EXPECT_TRUE(psu::inventory::selectChassisPath({}, "").empty());
+    EXPECT_TRUE(psu::inventory::selectChassisPath({}, "custom_board").empty());
 }
 
 TEST(Inventory, BuildsPowerSupplyPath)

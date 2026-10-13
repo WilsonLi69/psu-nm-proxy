@@ -25,6 +25,11 @@ namespace
 // ACBEL "ACBEL" and "R1BA2751A-P00A" strings (observed on the board).
 constexpr std::uint8_t assetReadLength = 0x10;
 
+constexpr auto objectMapperService = "xyz.openbmc_project.ObjectMapper";
+constexpr auto objectMapperPath = "/xyz/openbmc_project/object_mapper";
+constexpr auto objectMapperInterface = "xyz.openbmc_project.ObjectMapper";
+constexpr auto inventoryRoot = "/xyz/openbmc_project/inventory";
+
 std::string readAsciiBlock(sdbusplus::bus_t& bus, std::uint8_t psuAddr8,
                            std::uint8_t command)
 {
@@ -69,8 +74,22 @@ std::optional<PsuAsset> readAsset(sdbusplus::bus_t& bus, std::uint8_t psuAddr8)
     return PsuAsset{manufacturer, model};
 }
 
+std::vector<std::string> findBoardOrChassisPaths(sdbusplus::bus_t& bus)
+{
+    auto method = bus.new_method_call(objectMapperService, objectMapperPath,
+                                      objectMapperInterface, "GetSubTreePaths");
+    method.append(inventoryRoot, 0,
+                  std::vector<std::string>{boardInterface,
+                                           chassisItemInterface});
+    auto reply = bus.call(method);
+    std::vector<std::string> paths;
+    reply.read(paths);
+    return paths;
+}
+
 PowerSupplyHandleMap publish(sdbusplus::asio::object_server& server,
-                             const std::vector<PsuInventory>& inventory)
+                             const std::vector<PsuInventory>& inventory,
+                             std::string_view chassisPath)
 {
     std::vector<std::string> psuPaths;
     PowerSupplyHandleMap handles;
@@ -102,10 +121,15 @@ PowerSupplyHandleMap publish(sdbusplus::asio::object_server& server,
         psuPaths.push_back(path);
     }
 
-    auto chassis = server.add_interface(chassisPath, associationInterface);
-    chassis->register_property("Associations",
-                               chassisPoweringAssociations(psuPaths));
-    chassis->initialize();
+    if (!chassisPath.empty())
+    {
+        auto chassis =
+            server.add_interface(std::string(chassisPath),
+                                 associationInterface);
+        chassis->register_property("Associations",
+                                   chassisPoweringAssociations(psuPaths));
+        chassis->initialize();
+    }
 
     return handles;
 }

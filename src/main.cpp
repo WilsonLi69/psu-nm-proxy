@@ -46,6 +46,7 @@ void logConfig(const psu::config::Config& config)
         std::cerr << static_cast<int>(slot) << ":0x" << std::hex
                   << static_cast<int>(address) << std::dec << " ";
     }
+    std::cerr << "chassisId=" << config.chassisId << " ";
     std::cerr << "d7hFallbackEnabled=" << config.d7hFallbackEnabled << " ";
     std::cerr << "sensorWhitelist=";
     for (const auto& label : config.sensorWhitelist)
@@ -150,9 +151,40 @@ int main(int argc, char* argv[])
                 }
             }
 
+            // bmcweb builds the Redfish PowerSupplies collection by resolving
+            // the chassis id (the object leaf) against a Board/Chassis object,
+            // then following that object's powered_by association. Attach the
+            // association to that discovered object, never to a hard-coded
+            // path, so bmcweb can find the PSUs (spec §5.6).
+            std::string chassisPath;
+            try
+            {
+                chassisPath = psu::inventory::selectChassisPath(
+                    psu::inventory::findBoardOrChassisPaths(*conn),
+                    config.chassisId);
+            }
+            catch (const std::exception& e)
+            {
+                std::cerr << "psu-nm-proxy: Board/Chassis discovery failed: "
+                          << e.what() << "\n";
+            }
+            if (chassisPath.empty())
+            {
+                std::cerr << "psu-nm-proxy: no Board/Chassis object for "
+                             "chassisId '"
+                          << config.chassisId
+                          << "'; not publishing PSU associations\n";
+            }
+            else
+            {
+                std::cerr << "psu-nm-proxy: powered_by associations on "
+                          << chassisPath << "\n";
+            }
+
             // Publish inventory first so each poller can flip its slot's
             // Present/Functional on a failure-state transition (spec §5.7).
-            const auto handles = psu::inventory::publish(server, inventory);
+            const auto handles =
+                psu::inventory::publish(server, inventory, chassisPath);
             const auto sensorDefs = psu::config::selectSensors(config);
 
             for (const auto& [name, address8] : slots)
