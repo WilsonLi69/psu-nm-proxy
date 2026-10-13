@@ -369,7 +369,7 @@ Config parseConfig(std::string_view json)
         it != doc.end())
     {
         if (const auto value = positiveInteger(*it);
-            value && *value <= std::numeric_limits<std::size_t>::max())
+            value && std::in_range<std::size_t>(*value))
         {
             config.failuresBeforeNotFunctional = static_cast<std::size_t>(*value);
         }
