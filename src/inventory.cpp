@@ -90,7 +90,6 @@ std::vector<std::string> findBoardOrChassisPaths(sdbusplus::bus_t& bus)
 PowerSupplyHandleMap publish(sdbusplus::asio::object_server& server,
                              const std::vector<PsuInventory>& inventory)
 {
-    std::vector<std::string> psuPaths;
     PowerSupplyHandleMap handles;
 
     for (const auto& psu : inventory)
@@ -117,7 +116,6 @@ PowerSupplyHandleMap publish(sdbusplus::asio::object_server& server,
 
         handles.emplace(psu.name,
                         PowerSupplyHandles{std::move(item), std::move(status)});
-        psuPaths.push_back(path);
     }
 
     return handles;
