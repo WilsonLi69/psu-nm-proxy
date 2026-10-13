@@ -101,10 +101,19 @@ void scheduleChassisAssociation(
                 return;
             }
 
-            psu::inventory::publishChassisAssociation(server, psuPaths,
-                                                      chassisPath);
-            std::cerr << "psu-nm-proxy: powered_by associations on "
-                      << chassisPath << "\n";
+            try
+            {
+                psu::inventory::publishChassisAssociation(server, psuPaths,
+                                                          chassisPath);
+                std::cerr << "psu-nm-proxy: powered_by associations on "
+                          << chassisPath << "\n";
+            }
+            catch (const std::exception& e)
+            {
+                std::cerr << "psu-nm-proxy: publishing PSU associations "
+                             "failed: "
+                          << e.what() << "\n";
+            }
         });
 }
 
