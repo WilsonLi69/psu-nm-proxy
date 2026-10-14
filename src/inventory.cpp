@@ -5,11 +5,13 @@
 #include "pmbus.hpp"
 #include "sensor_set.hpp"
 
+#include <boost/system/error_code.hpp>
+#include <sdbusplus/asio/connection.hpp>
 #include <sdbusplus/asio/object_server.hpp>
-#include <sdbusplus/bus.hpp>
 
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <optional>
 #include <string>
 #include <utility>
@@ -30,61 +32,78 @@ constexpr auto objectMapperPath = "/xyz/openbmc_project/object_mapper";
 constexpr auto objectMapperInterface = "xyz.openbmc_project.ObjectMapper";
 constexpr auto inventoryRoot = "/xyz/openbmc_project/inventory";
 
-std::string readAsciiBlock(sdbusplus::bus_t& bus, std::uint8_t psuAddr8,
-                           std::uint8_t command)
+// One asynchronous MFR_* BLOCK_READ, decoded to its ASCII string.
+void readAsciiBlockAsync(sdbusplus::asio::connection& conn,
+                         std::uint8_t psuAddr8, std::uint8_t command,
+                         std::function<void(std::optional<std::string>)> cb)
 {
     const auto payload =
         psu::nm::encodeBlockRead(psuAddr8, command, assetReadLength);
-    return psu::pmbus::decodeAscii(
-        psu::ipmb::sendRawPmbusToleratingCompletionCode(bus, payload));
+    psu::ipmb::sendRawPmbusToleratingCompletionCodeAsync(
+        conn, payload, [cb = std::move(cb)](psu::ipmb::Response response) {
+            if (!response)
+            {
+                cb(std::nullopt);
+                return;
+            }
+            try
+            {
+                cb(psu::pmbus::decodeAscii(*response));
+            }
+            catch (const std::exception&)
+            {
+                cb(std::nullopt);
+            }
+        });
 }
 
 } // namespace
 
-std::optional<PsuAsset> readAsset(sdbusplus::bus_t& bus, std::uint8_t psuAddr8)
+void readAssetAsync(sdbusplus::asio::connection& conn, std::uint8_t psuAddr8,
+                    AssetCallback callback)
 {
-    std::string manufacturer;
-    try
-    {
-        manufacturer =
-            readAsciiBlock(bus, psuAddr8, psu::sensors::mfrIdCommand);
-    }
-    catch (const std::exception&)
-    {
-        return std::nullopt;
-    }
-    if (!usableAssetString(manufacturer))
-    {
-        return std::nullopt;
-    }
+    readAsciiBlockAsync(
+        conn, psuAddr8, psu::sensors::mfrIdCommand,
+        [conn = &conn, psuAddr8,
+         callback = std::move(callback)](std::optional<std::string> mfrId) mutable {
+            if (!mfrId || !usableAssetString(*mfrId))
+            {
+                callback(std::nullopt);
+                return;
+            }
 
-    std::string model;
-    try
-    {
-        model = readAsciiBlock(bus, psuAddr8, psu::sensors::mfrModelCommand);
-    }
-    catch (const std::exception&)
-    {
-    }
-    if (!usableAssetString(model))
-    {
-        model.clear();
-    }
-
-    return PsuAsset{manufacturer, model};
+            std::string manufacturer = std::move(*mfrId);
+            readAsciiBlockAsync(
+                *conn, psuAddr8, psu::sensors::mfrModelCommand,
+                [manufacturer = std::move(manufacturer),
+                 callback = std::move(callback)](
+                    std::optional<std::string> model) mutable {
+                    if (!model || !usableAssetString(*model))
+                    {
+                        model = std::string{};
+                    }
+                    callback(
+                        PsuAsset{std::move(manufacturer), std::move(*model)});
+                });
+        });
 }
 
-std::vector<std::string> findBoardOrChassisPaths(sdbusplus::bus_t& bus)
+void findBoardOrChassisPathsAsync(sdbusplus::asio::connection& conn,
+                                  PathsCallback callback)
 {
-    auto method = bus.new_method_call(objectMapperService, objectMapperPath,
-                                      objectMapperInterface, "GetSubTreePaths");
-    method.append(inventoryRoot, 0,
-                  std::vector<std::string>{boardInterface,
-                                           chassisItemInterface});
-    auto reply = bus.call(method);
-    std::vector<std::string> paths;
-    reply.read(paths);
-    return paths;
+    conn.async_method_call(
+        [callback = std::move(callback)](const boost::system::error_code& ec,
+                                         std::vector<std::string> paths) {
+            if (ec)
+            {
+                callback(std::nullopt);
+                return;
+            }
+            callback(std::move(paths));
+        },
+        objectMapperService, objectMapperPath, objectMapperInterface,
+        "GetSubTreePaths", std::string(inventoryRoot), 0,
+        std::vector<std::string>{boardInterface, chassisItemInterface});
 }
 
 PowerSupplyHandleMap publish(sdbusplus::asio::object_server& server,

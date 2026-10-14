@@ -1,10 +1,10 @@
 #pragma once
 
 #include "failure_tracker.hpp"
-#include "ipmb_client.hpp"
-#include "nm_command.hpp"
+#include "ipmb_reader.hpp"
 #include "operational_state.hpp"
 #include "pmbus.hpp"
+#include "poll_cycle.hpp"
 #include "sensor_set.hpp"
 
 #include <boost/asio/io_context.hpp>
@@ -15,13 +15,13 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <exception>
 #include <functional>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace psu::sensors
@@ -38,6 +38,10 @@ using FunctionalSink = std::function<void(bool present, bool functional)>;
 
 // Publishes the §8 sensor set for one PSU and refreshes it every interval.
 // Unconditional polling: never gated on host power state (spec §5.4).
+//
+// All Ipmb reads are asynchronous (see PollCycle / IpmbWordReader), so a poll
+// never blocks the io_context that serves the object server: introspection and
+// property reads stay answerable even while the ME is slow or absent.
 class Poller
 {
   public:
@@ -48,19 +52,27 @@ class Poller
            std::vector<const SensorDef*> sensorDefs,
            std::map<std::string, Thresholds> thresholds = {},
            FunctionalSink onFunctionalChange = {}) :
-        conn(conn), server(server), psuName(std::move(psuName)),
-        psuAddr8(psuAddr8), interval(interval), timer(io),
-        tracker(failuresBeforeNotFunctional), sensorDefs(std::move(sensorDefs)),
+        server(server), psuName(std::move(psuName)), interval(interval),
+        timer(io), tracker(failuresBeforeNotFunctional),
+        reader(conn, psuAddr8), cycle(reader, sensorDefs),
         thresholds(std::move(thresholds)),
         onFunctionalChange(std::move(onFunctionalChange))
     {
-        addSensors();
-        readVoutExponent();
+        addSensors(sensorDefs);
     }
 
     void start()
     {
-        poll();
+        // Read VOUT_MODE once, asynchronously, before the first cycle so
+        // Linear16 uses the PSU's exponent; a failed read keeps the default.
+        reader.read(voutModeCommand, [this](WordResult word) {
+            if (word)
+            {
+                voutExponent =
+                    pmbus::voutModeExponent(static_cast<std::uint8_t>(*word));
+            }
+            poll();
+        });
     }
 
   private:
@@ -73,9 +85,9 @@ class Poller
         std::shared_ptr<sdbusplus::asio::dbus_interface> status;
     };
 
-    void addSensors()
+    void addSensors(const std::vector<const SensorDef*>& defs)
     {
-        for (const auto* def : sensorDefs)
+        for (const auto* def : defs)
         {
             const std::string path = sensorPath(psuName, *def);
 
@@ -130,57 +142,40 @@ class Poller
         iface->initialize();
     }
 
-    std::uint16_t readWord(std::uint8_t command)
-    {
-        const auto payload = psu::nm::encodeReadWord(psuAddr8, command);
-        const auto bytes = psu::ipmb::sendRawPmbus(conn, payload);
-        return psu::nm::wordFromLittleEndian(bytes);
-    }
-
-    void readVoutExponent()
-    {
-        try
-        {
-            voutExponent = psu::pmbus::voutModeExponent(
-                static_cast<std::uint8_t>(readWord(voutModeCommand)));
-        }
-        catch (const std::exception&)
-        {
-            voutExponent = defaultVoutExponent;
-        }
-    }
-
-    double decode(const SensorDef& def, std::uint16_t word) const
-    {
-        if (def.format == Format::linear16)
-        {
-            return psu::pmbus::decodeLinear16(word, voutExponent);
-        }
-        return psu::pmbus::decodeLinear11(word);
-    }
-
     void poll()
     {
-        bool readsSucceeded = true;
+        // Sensor values are published as each read succeeds (the onValue
+        // sink); applyCycle then commits the cycle's health once it finishes.
+        cycle.run(
+            voutExponent,
+            [this](std::size_t index, double value) {
+                if (index < sensors.size())
+                {
+                    sensors[index].value->set_property("Value", value);
+                }
+            },
+            [this](CycleResult result) {
+                applyCycle(result);
 
-        for (auto& sensor : sensors)
-        {
-            try
-            {
-                const auto word = readWord(sensor.def->command);
-                sensor.value->set_property("Value",
-                                           decode(*sensor.def, word));
-            }
-            catch (const std::exception&)
-            {
-                readsSucceeded = false;
-            }
-        }
+                timer.expires_after(interval);
+                timer.async_wait(
+                    [this](const boost::system::error_code& ec) {
+                        if (!ec)
+                        {
+                            poll();
+                        }
+                    });
+            });
+    }
 
+    // Commit one completed cycle: advance the consecutive-failure tracker and
+    // flip Present/Functional (spec §5.7). Values were already published as
+    // their reads completed.
+    void applyCycle(const CycleResult& result)
+    {
         // A cycle is a failure when any D9h read failed; a clean cycle clears
         // the consecutive-failure count (spec §5.7).
-        const auto statusWord = readStatusWord();
-        const bool cycleOk = readsSucceeded && statusWord.has_value();
+        const bool cycleOk = result.readsSucceeded && result.status.has_value();
         if (cycleOk)
         {
             tracker.recordSuccess();
@@ -190,29 +185,13 @@ class Poller
             tracker.recordFailure();
         }
 
-        const auto health = slotHealth(tracker.functional(), statusWord);
+        const auto health = slotHealth(tracker.functional(), result.status);
         for (auto& sensor : sensors)
         {
             sensor.status->set_property("Functional", health.functional);
             sensor.status->set_property("State", std::string(health.state));
         }
         publishFailureTransition(health.present, health.functional);
-
-        timer.expires_after(interval);
-        timer.async_wait([this](const boost::system::error_code&) { poll(); });
-    }
-
-    // Returns the decoded STATUS_WORD, or no value when the read itself failed.
-    std::optional<psu::pmbus::StatusWord> readStatusWord()
-    {
-        try
-        {
-            return psu::pmbus::decodeStatusWord(readWord(statusWordCommand));
-        }
-        catch (const std::exception&)
-        {
-            return std::nullopt;
-        }
     }
 
     // Emit the enabling/disabling transition once per crossing and mirror the
@@ -246,16 +225,15 @@ class Poller
         }
     }
 
-    sdbusplus::asio::connection& conn;
     sdbusplus::asio::object_server& server;
     std::string psuName;
-    std::uint8_t psuAddr8;
     std::chrono::milliseconds interval;
     boost::asio::steady_timer timer;
     std::vector<Published> sensors;
     int voutExponent = defaultVoutExponent;
     FailureTracker tracker;
-    std::vector<const SensorDef*> sensorDefs;
+    IpmbWordReader reader;
+    PollCycle cycle;
     std::map<std::string, Thresholds> thresholds;
     FunctionalSink onFunctionalChange;
     bool lastPresent = true;

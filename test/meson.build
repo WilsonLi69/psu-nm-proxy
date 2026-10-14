@@ -7,6 +7,7 @@ test_exe = executable(
     'pmbus_test.cpp',
     'sensor_test.cpp',
     'inventory_test.cpp',
+    'poll_cycle_test.cpp',
     'failure_tracker_test.cpp',
     'operational_state_test.cpp',
     'config_test.cpp',

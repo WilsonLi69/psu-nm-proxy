@@ -1,8 +1,7 @@
 #pragma once
 
-#include <sdbusplus/bus.hpp>
-
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -13,6 +12,7 @@
 
 namespace sdbusplus::asio
 {
+class connection;
 class dbus_interface;
 class object_server;
 } // namespace sdbusplus::asio
@@ -109,8 +109,12 @@ inline std::string
 }
 
 // The Board/Chassis object paths under the inventory root, via the
-// ObjectMapper. Throws on a D-Bus failure.
-std::vector<std::string> findBoardOrChassisPaths(sdbusplus::bus_t& bus);
+// ObjectMapper, asynchronously. The callback runs on the io_context thread
+// with the discovered paths, or std::nullopt on a D-Bus failure.
+using PathsCallback =
+    std::function<void(std::optional<std::vector<std::string>>)>;
+void findBoardOrChassisPathsAsync(sdbusplus::asio::connection& conn,
+                                  PathsCallback callback);
 
 inline PsuInventory
     makeInventory(std::string name, const std::optional<PsuAsset>& asset)
@@ -173,11 +177,14 @@ inline bool usableAssetString(std::string_view value)
 
 // Read a slot's Asset once at startup: MFR_ID (0x99) and MFR_MODEL (0x9A) are
 // PMBus BLOCK_READs whose length-prefixed ASCII blocks are decoded with
-// psu::pmbus::decodeAscii. Returns no value when MFR_ID is unusable, which is
-// how the registered-but-empty slot is detected. The read tolerates the ME's
-// non-zero completion code for block reads (see psu::ipmb).
-std::optional<PsuAsset> readAsset(sdbusplus::bus_t& bus,
-                                  std::uint8_t psuAddr8);
+// psu::pmbus::decodeAscii. The callback runs on the io_context thread with no
+// value when MFR_ID is unusable, which is how the registered-but-empty slot is
+// detected, or on a failed read. The read tolerates the ME's non-zero
+// completion code for block reads (see psu::ipmb), and is asynchronous so it
+// never blocks the D-Bus service.
+using AssetCallback = std::function<void(std::optional<PsuAsset>)>;
+void readAssetAsync(sdbusplus::asio::connection& conn, std::uint8_t psuAddr8,
+                    AssetCallback callback);
 
 // Publish the inventory objects. Returns the per-slot handles so the poller
 // can flip Present/Functional when a slot's failure state changes (spec §5.7).
