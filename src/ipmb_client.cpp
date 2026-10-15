@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <exception>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -19,25 +20,31 @@ constexpr std::uint8_t channel = 0x01; // 0 = IPMB; 1 = ME
 constexpr std::uint8_t lun = 0x00;
 constexpr std::uint64_t callTimeoutUs = 2'000'000; // async method-call timeout
 
+using IpmbReply = std::tuple<int, std::uint8_t, std::uint8_t, std::uint8_t,
+                             std::uint8_t, std::vector<std::uint8_t>>;
+
 void sendCommandImpl(sdbusplus::asio::connection& conn, std::uint8_t cmd,
                      const std::vector<std::uint8_t>& data, bool tolerateCc,
                      ResponseCallback callback)
 {
     conn.async_method_call_timed(
         [&conn, tolerateCc, callback = std::move(callback)](
-            const boost::system::error_code& ec, int status, std::uint8_t,
-            std::uint8_t, std::uint8_t, std::uint8_t completionCode,
-            std::vector<std::uint8_t> response) {
+            const boost::system::error_code& ec, const IpmbReply& replyFields) {
             Response result;
-            if (!ec && status == 0 && (tolerateCc || completionCode == 0x00))
+            if (!ec)
             {
-                try
+                const auto& [status, rsNetFn, rsLun, rsCmd, completionCode,
+                             response] = replyFields;
+                if (status == 0 && (tolerateCc || completionCode == 0x00))
                 {
-                    result = psu::nm::stripIntelEcho(response);
-                }
-                catch (const std::exception&)
-                {
-                    result = std::nullopt;
+                    try
+                    {
+                        result = psu::nm::stripIntelEcho(response);
+                    }
+                    catch (const std::exception&)
+                    {
+                        result = std::nullopt;
+                    }
                 }
             }
 
