@@ -27,6 +27,7 @@ executable(
     'src/inventory.cpp',
     'src/ipmb_client.cpp',
     'src/ipmb_reader.cpp',
+    'src/slot_discovery.cpp',
     dependencies: [
         sdbusplus_dep,
         systemd_dep,
