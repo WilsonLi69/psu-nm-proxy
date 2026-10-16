@@ -12,7 +12,9 @@ test_exe = executable(
     'operational_state_test.cpp',
     'config_test.cpp',
     'threshold_test.cpp',
+    'slot_discovery_test.cpp',
     '../src/config.cpp',
+    '../src/slot_discovery.cpp',
     dependencies: [
         gtest_dep,
         nlohmann_json_dep,
