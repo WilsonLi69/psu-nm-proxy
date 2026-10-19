@@ -16,10 +16,11 @@ inline constexpr std::string_view operationalStateDisabled =
     "xyz.openbmc_project.State.Decorator.OperationalStatus.State.Disabled";
 
 // The health published for one slot on a poll cycle (spec §5.6/§5.7). Present
-// follows only the consecutive-failure tracker; Functional additionally
-// requires a successful STATUS_WORD read reporting POWER_GOOD; State follows
-// the STATUS_WORD OFF bit. A successful read with POWER_GOOD=0 therefore keeps
-// Present true and State Enabled.
+// follows only the consecutive-failure tracker; Functional is true when the
+// slot communicates cleanly without tracker failure and the output status is
+// healthy (in standby with output OFF, or in running state with POWER_GOOD
+// asserted); State follows the STATUS_WORD OFF bit (Disabled when off, Enabled
+// when running).
 struct SlotHealth
 {
     bool present;
@@ -33,9 +34,9 @@ inline SlotHealth
     slotHealth(bool trackerOk,
                const std::optional<pmbus::StatusWord>& status)
 {
-    const bool functional =
-        trackerOk && status.has_value() && status->powerGood;
     const bool disabled = status.has_value() && status->off;
+    const bool functional =
+        trackerOk && status.has_value() && (status->off || status->powerGood);
     return {trackerOk, functional,
             disabled ? operationalStateDisabled : operationalStateEnabled};
 }

@@ -98,7 +98,7 @@ TEST(PollCycle, DoesNotBlockTheIoContextWhileAReadIsOutstanding)
     ASSERT_EQ(reader.pending.size(), 1U);
     EXPECT_FALSE(done);
 
-    reader.complete(0x0800); // STATUS_WORD, POWER_GOOD
+    reader.complete(0x0000); // STATUS_WORD all clear (running, power good)
     EXPECT_TRUE(done);
 }
 
@@ -107,7 +107,7 @@ TEST(PollCycle, DecodesEverySensorAndStatus)
     ScriptedReader reader;
     reader.responses[0x88] = 0x0001; // vin Linear11 -> 1
     reader.responses[0x8B] = 0x0010; // vout Linear16, N=-4 -> 1
-    reader.responses[0x79] = 0x0800; // STATUS_WORD, POWER_GOOD
+    reader.responses[0x79] = 0x0000; // STATUS_WORD all clear (running, power good)
 
     std::vector<const psu::sensors::SensorDef*> defs = {sensorDef("vin"),
                                                         sensorDef("vout")};
@@ -148,7 +148,7 @@ TEST(PollCycle, FailedReadDoesNotStopTheRestOfTheCycle)
     ScriptedReader reader;
     reader.responses[0x88] = 0x0002; // vin OK -> 2
     // iin (0x89) not present -> failure
-    reader.responses[0x79] = 0x0800;
+    reader.responses[0x79] = 0x0000;
 
     std::vector<const psu::sensors::SensorDef*> defs = {sensorDef("vin"),
                                                         sensorDef("iin")};

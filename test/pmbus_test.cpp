@@ -89,34 +89,38 @@ TEST(PmbusAscii, IgnoresTrailingBytes)
     EXPECT_EQ(psu::pmbus::decodeAscii(bytes), "OK");
 }
 
-// STATUS_WORD (0x79): [6] OFF, [11] POWER_GOOD.
+// STATUS_WORD (0x79): [6] OFF, [11] POWER_GOOD# (active-low: 0 indicates
+// asserted/good, 1 indicates negated/not good).
 TEST(PmbusStatusWord, DecodesProbedHostOffWord)
 {
-    // 0x0840 observed on the board: OFF = 1, POWER_GOOD = 1.
+    // 0x0840 observed on the board in standby: OFF = 1, POWER_GOOD# = 1 (negated / not good).
     const auto status = psu::pmbus::decodeStatusWord(0x0840);
     EXPECT_TRUE(status.off);
-    EXPECT_TRUE(status.powerGood);
+    EXPECT_FALSE(status.powerGood);
 }
 
 TEST(PmbusStatusWord, DecodesAllClear)
 {
+    // 0x0000 in running state: OFF = 0, POWER_GOOD# = 0 (asserted / good).
     const auto status = psu::pmbus::decodeStatusWord(0x0000);
     EXPECT_FALSE(status.off);
-    EXPECT_FALSE(status.powerGood);
+    EXPECT_TRUE(status.powerGood);
 }
 
-TEST(PmbusStatusWord, DecodesOffWithoutPowerGood)
+TEST(PmbusStatusWord, DecodesOffWithPowerGoodAsserted)
 {
+    // 0x0040: OFF = 1, POWER_GOOD# = 0 (asserted / good).
     const auto status = psu::pmbus::decodeStatusWord(0x0040);
     EXPECT_TRUE(status.off);
-    EXPECT_FALSE(status.powerGood);
+    EXPECT_TRUE(status.powerGood);
 }
 
-TEST(PmbusStatusWord, DecodesPowerGoodWithoutOff)
+TEST(PmbusStatusWord, DecodesPowerGoodNegatedWithoutOff)
 {
+    // 0x0800: output is on (OFF = 0), but POWER_GOOD# = 1 (negated / not good).
     const auto status = psu::pmbus::decodeStatusWord(0x0800);
     EXPECT_FALSE(status.off);
-    EXPECT_TRUE(status.powerGood);
+    EXPECT_FALSE(status.powerGood);
 }
 
 // Board cross-checks (#10): the decoded input/output power pairs are

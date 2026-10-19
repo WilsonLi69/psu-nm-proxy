@@ -80,7 +80,8 @@ struct StatusWord
     bool powerGood;
 };
 
-// STATUS_WORD bit field: [6] OFF (output disabled) and [11] POWER_GOOD.
+// STATUS_WORD bit field: [6] OFF (output disabled) and [11] POWER_GOOD#
+// (active-low: 0 indicates asserted/good, 1 indicates negated/not good).
 inline StatusWord decodeStatusWord(std::uint16_t word)
 {
     constexpr std::uint16_t offBit = 6;
@@ -88,7 +89,7 @@ inline StatusWord decodeStatusWord(std::uint16_t word)
 
     return {
         ((word >> offBit) & 0x1) != 0,
-        ((word >> powerGoodBit) & 0x1) != 0,
+        ((word >> powerGoodBit) & 0x1) == 0,
     };
 }
 
