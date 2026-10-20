@@ -32,8 +32,9 @@ inline constexpr auto operationalStatusInterface =
     "xyz.openbmc_project.State.Decorator.OperationalStatus";
 
 // Called whenever a slot's Present/Functional pair changes (spec §5.7):
-// Present follows the consecutive-failure tracker, while Functional
-// additionally requires a successful STATUS_WORD read reporting POWER_GOOD.
+// Present is decoupled from transient communication failures and restored on
+// a clean read cycle, while Functional degrades on consecutive failures or
+// power faults and is restored on successful read.
 using FunctionalSink = std::function<void(bool present, bool functional)>;
 
 // Publishes the §8 sensor set for one PSU and refreshes it every interval.
@@ -51,15 +52,38 @@ class Poller
            std::size_t failuresBeforeNotFunctional,
            std::vector<const SensorDef*> sensorDefs,
            std::map<std::string, Thresholds> thresholds = {},
-           FunctionalSink onFunctionalChange = {}) :
+           FunctionalSink onFunctionalChange = {},
+           bool initiallyPresent = true) :
         server(server), psuName(std::move(psuName)), interval(interval),
         timer(io), tracker(failuresBeforeNotFunctional),
         reader(conn, psuAddr8), cycle(reader, sensorDefs),
         thresholds(std::move(thresholds)),
-        onFunctionalChange(std::move(onFunctionalChange))
+        onFunctionalChange(std::move(onFunctionalChange)),
+        lastPresent(initiallyPresent),
+        lastFunctional(initiallyPresent)
     {
         addSensors(sensorDefs);
     }
+
+    void setPresent(bool present)
+    {
+        lastPresent = present;
+        if (!present)
+        {
+            lastFunctional = false;
+        }
+    }
+
+    bool isPresent() const
+    {
+        return lastPresent;
+    }
+
+    bool isFunctional() const
+    {
+        return lastFunctional;
+    }
+
 
     void start()
     {
@@ -185,7 +209,9 @@ class Poller
             tracker.recordFailure();
         }
 
-        const auto health = slotHealth(tracker.functional(), result.status);
+        const auto health =
+            slotHealth(lastPresent, tracker.functional(), result.status,
+                       result.readsSucceeded);
         for (auto& sensor : sensors)
         {
             sensor.status->set_property("Functional", health.functional);
@@ -194,12 +220,13 @@ class Poller
         publishFailureTransition(health.present, health.functional);
     }
 
-    // Emit the enabling/disabling transition once per crossing and mirror the
-    // slot's Present/Functional pair onto inventory (spec §5.7).
+    // Emit transitions once per crossing and mirror the slot's
+    // Present/Functional pair onto inventory (spec §5.7).
     void publishFailureTransition(bool present, bool functional)
     {
-        const bool trackerChanged = present != lastPresent;
-        if (!trackerChanged && functional == lastFunctional)
+        const bool presenceChanged = (present != lastPresent);
+        const bool functionalChanged = (functional != lastFunctional);
+        if (!presenceChanged && !functionalChanged)
         {
             return;
         }
@@ -211,16 +238,35 @@ class Poller
             onFunctionalChange(present, functional);
         }
 
-        if (trackerChanged)
+        if (presenceChanged)
         {
             if (present)
+            {
+                std::cerr << psuName << ": present again\n";
+            }
+            else
+            {
+                std::cerr << psuName << ": no longer present\n";
+            }
+        }
+
+        if (functionalChanged)
+        {
+            if (functional)
             {
                 std::cerr << psuName << ": functional again\n";
             }
             else
             {
-                std::cerr << psuName << ": not functional after "
-                          << tracker.threshold() << " consecutive failures\n";
+                if (!tracker.functional())
+                {
+                    std::cerr << psuName << ": not functional after "
+                              << tracker.threshold() << " consecutive failures\n";
+                }
+                else
+                {
+                    std::cerr << psuName << ": not functional\n";
+                }
             }
         }
     }
