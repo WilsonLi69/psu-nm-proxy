@@ -116,3 +116,19 @@ TEST(FailureTracker, SuccessOnFreshTrackerIsNoop)
     EXPECT_TRUE(tracker.functional());
     EXPECT_EQ(tracker.consecutiveFailures(), 0U);
 }
+
+TEST(FailureTracker, CleanPollCycleImmediatelyRestoresFunctionalFollowingTransientFailure)
+{
+    FailureTracker tracker(3);
+
+    for (std::size_t i = 0; i < tracker.threshold(); ++i)
+    {
+        tracker.recordFailure();
+    }
+    EXPECT_FALSE(tracker.functional());
+    EXPECT_EQ(tracker.consecutiveFailures(), 3U);
+
+    tracker.recordSuccess();
+    EXPECT_TRUE(tracker.functional());
+    EXPECT_EQ(tracker.consecutiveFailures(), 0U);
+}
