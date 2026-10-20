@@ -1,5 +1,8 @@
 #include "poll_cycle.hpp"
 
+#include "failure_tracker.hpp"
+#include "operational_state.hpp"
+
 #include <gtest/gtest.h>
 
 #include <boost/asio/io_context.hpp>
@@ -189,4 +192,104 @@ TEST(PollCycle, MissingStatusLeavesStatusUnset)
     ASSERT_TRUE(result.has_value());
     EXPECT_TRUE(result->readsSucceeded);
     EXPECT_FALSE(result->status.has_value());
+}
+
+// Verifies that when a poll cycle fails communication, slotHealth evaluates to
+// Functional=false while keeping Present=true for an installed PSU.
+TEST(PollCycle, CommunicationFailureMaintainsPresentWhileClearingFunctional)
+{
+    ScriptedReader reader;
+    // Missing responses simulate communication failure
+    std::vector<const psu::sensors::SensorDef*> defs = {sensorDef("vin")};
+    psu::sensors::PollCycle cycle(reader, defs);
+
+    std::optional<psu::sensors::CycleResult> result;
+    cycle.run(-4, {}, [&result](psu::sensors::CycleResult r) {
+        result = std::move(r);
+    });
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->readsSucceeded);
+    EXPECT_FALSE(result->status.has_value());
+
+    // When tracker records consecutive failures and degrades to false:
+    psu::sensors::FailureTracker tracker(1);
+    tracker.recordFailure();
+    EXPECT_FALSE(tracker.functional());
+
+    // Installed PSU maintains Present=true, but Functional is false:
+    const auto health = psu::sensors::slotHealth(
+        true, tracker.functional(), result->status, result->readsSucceeded);
+    EXPECT_TRUE(health.present);
+    EXPECT_FALSE(health.functional);
+}
+
+// Verifies that a clean poll cycle restores Present=true and Functional=true
+// on a slot marked absent.
+TEST(PollCycle, CleanPollCycleRestoresPresentAndFunctionalOnAbsentSlot)
+{
+    ScriptedReader reader;
+    reader.responses[0x88] = 0x0001; // vin
+    reader.responses[0x79] = 0x0000; // STATUS_WORD all clear
+
+    std::vector<const psu::sensors::SensorDef*> defs = {sensorDef("vin")};
+    psu::sensors::PollCycle cycle(reader, defs);
+
+    std::optional<psu::sensors::CycleResult> result;
+    cycle.run(-4, {}, [&result](psu::sensors::CycleResult r) {
+        result = std::move(r);
+    });
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(result->readsSucceeded);
+    EXPECT_TRUE(result->status.has_value());
+
+    psu::sensors::FailureTracker tracker(3);
+    // Successful poll cycle calls recordSuccess
+    if (result->readsSucceeded && result->status.has_value())
+    {
+        tracker.recordSuccess();
+    }
+
+    // Evaluating an absent slot with clean cycle immediately restores presence
+    const auto health = psu::sensors::slotHealth(
+        false, tracker.functional(), result->status, result->readsSucceeded);
+    EXPECT_TRUE(health.present);
+    EXPECT_TRUE(health.functional);
+    EXPECT_EQ(health.state, psu::sensors::operationalStateEnabled);
+}
+
+// Verifies that following transient communication failure, a clean poll cycle
+// restores Functional=true immediately via tracker.recordSuccess().
+TEST(PollCycle, CleanPollCycleRestoresFunctionalAfterTransientFailure)
+{
+    psu::sensors::FailureTracker tracker(2);
+    tracker.recordFailure();
+    tracker.recordFailure();
+    ASSERT_FALSE(tracker.functional());
+
+    ScriptedReader reader;
+    reader.responses[0x88] = 0x0001; // vin
+    reader.responses[0x79] = 0x0000; // STATUS_WORD all clear
+
+    std::vector<const psu::sensors::SensorDef*> defs = {sensorDef("vin")};
+    psu::sensors::PollCycle cycle(reader, defs);
+
+    std::optional<psu::sensors::CycleResult> result;
+    cycle.run(-4, {}, [&result](psu::sensors::CycleResult r) {
+        result = std::move(r);
+    });
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(result->readsSucceeded);
+    EXPECT_TRUE(result->status.has_value());
+
+    // Clean cycle resets failure tracker
+    tracker.recordSuccess();
+    EXPECT_TRUE(tracker.functional());
+
+    const auto health = psu::sensors::slotHealth(
+        true, tracker.functional(), result->status, result->readsSucceeded);
+    EXPECT_TRUE(health.present);
+    EXPECT_TRUE(health.functional);
 }
