@@ -79,11 +79,57 @@ TEST(OperationalState, MissingStatusIsNotFunctional)
     EXPECT_FALSE(health.functional);
 }
 
-// Crossing the consecutive-failure threshold clears Present as well as
-// Functional (spec §5.7).
-TEST(OperationalState, TrackerFailureClearsPresentAndFunctional)
+// Crossing the consecutive-failure threshold clears Functional while
+// maintaining Present=true for an installed PSU (spec §5.7).
+TEST(OperationalState, TrackerFailureClearsFunctionalWhileMaintainingPresent)
 {
     const auto health = psu::sensors::slotHealth(false, StatusWord{false, true});
+
+    EXPECT_TRUE(health.present);
+    EXPECT_FALSE(health.functional);
+}
+
+// For an installed PSU (currentlyPresent=true), consecutive communication
+// failure preserves Present=true while clearing Functional (spec §5.7).
+TEST(OperationalState, InstalledSlotPreservesPresentOnCommunicationFailure)
+{
+    const auto health =
+        psu::sensors::slotHealth(true, false, std::nullopt, false);
+
+    EXPECT_TRUE(health.present);
+    EXPECT_FALSE(health.functional);
+}
+
+// If a slot is marked absent (currentlyPresent=false), completing a successful
+// poll cycle (readsSucceeded && status.has_value()) restores Present=true and
+// Functional=true (spec §5.7).
+TEST(OperationalState, AbsentSlotRestoresPresentAndFunctionalOnCleanRead)
+{
+    const auto health = psu::sensors::slotHealth(
+        false, true, StatusWord{false, true}, true);
+
+    EXPECT_TRUE(health.present);
+    EXPECT_TRUE(health.functional);
+    EXPECT_EQ(health.state, psu::sensors::operationalStateEnabled);
+}
+
+// If a slot is marked absent (currentlyPresent=false), a failed cycle
+// keeps it absent and non-functional (spec §5.7).
+TEST(OperationalState, AbsentSlotRemainsAbsentOnFailedCycle)
+{
+    const auto health =
+        psu::sensors::slotHealth(false, true, std::nullopt, false);
+
+    EXPECT_FALSE(health.present);
+    EXPECT_FALSE(health.functional);
+}
+
+// If a slot is marked absent (currentlyPresent=false), a cycle where sensor reads
+// fail despite status having a value does not restore presence (spec §5.7).
+TEST(OperationalState, AbsentSlotRemainsAbsentWhenReadsFailDespiteStatus)
+{
+    const auto health = psu::sensors::slotHealth(
+        false, true, StatusWord{false, true}, false);
 
     EXPECT_FALSE(health.present);
     EXPECT_FALSE(health.functional);
@@ -92,5 +138,9 @@ TEST(OperationalState, TrackerFailureClearsPresentAndFunctional)
 TEST(OperationalState, HealthEquality)
 {
     EXPECT_EQ(psu::sensors::slotHealth(true, StatusWord{false, true}),
+              (SlotHealth{true, true, psu::sensors::operationalStateEnabled}));
+    EXPECT_EQ(psu::sensors::slotHealth(false, StatusWord{false, true}),
+              (SlotHealth{true, false, psu::sensors::operationalStateEnabled}));
+    EXPECT_EQ(psu::sensors::slotHealth(false, true, StatusWord{false, true}, true),
               (SlotHealth{true, true, psu::sensors::operationalStateEnabled}));
 }
