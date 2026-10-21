@@ -143,16 +143,41 @@ inline Association poweringAssociation(std::string_view psuPath)
     return {"powered_by", "powering", std::string(psuPath)};
 }
 
+// `["all_sensors", "chassis", <sensor path>]` for the chassis sensor
+// association consumed by bmcweb's SensorCollection / Power / Thermal queries.
+inline Association allSensorsAssociation(std::string_view sensorPath)
+{
+    return {"all_sensors", "chassis", std::string(sensorPath)};
+}
+
+// `["inventory", "sensors", <PSU path>]` for the per-sensor association
+// linking a sensor object to its owning PowerSupply inventory item.
+inline Association sensorInventoryAssociation(std::string_view psuPath)
+{
+    return {"inventory", "sensors", std::string(psuPath)};
+}
+
 inline std::vector<Association>
-    chassisPoweringAssociations(const std::vector<std::string>& psuPaths)
+    chassisAssociations(const std::vector<std::string>& psuPaths,
+                        const std::vector<std::string>& sensorPaths = {})
 {
     std::vector<Association> associations;
-    associations.reserve(psuPaths.size());
+    associations.reserve(psuPaths.size() + sensorPaths.size());
     for (const auto& path : psuPaths)
     {
         associations.push_back(poweringAssociation(path));
     }
+    for (const auto& path : sensorPaths)
+    {
+        associations.push_back(allSensorsAssociation(path));
+    }
     return associations;
+}
+
+inline std::vector<Association>
+    chassisPoweringAssociations(const std::vector<std::string>& psuPaths)
+{
+    return chassisAssociations(psuPaths);
 }
 
 // A decoded Asset string is usable when it is non-empty printable ASCII. An
@@ -191,12 +216,14 @@ void readAssetAsync(sdbusplus::asio::connection& conn, std::uint8_t psuAddr8,
 PowerSupplyHandleMap publish(sdbusplus::asio::object_server& server,
                              const std::vector<PsuInventory>& inventory);
 
-// Attach the powered_by associations for `psuPaths` to `chassisPath` (the
-// inventory object bmcweb resolves). A no-op for an empty path, so no
-// association is ever left on an unrelated object (spec §5.6).
-void publishChassisAssociation(sdbusplus::asio::object_server& server,
-                               const std::vector<std::string>& psuPaths,
-                               std::string_view chassisPath);
+// Attach the powered_by associations for `psuPaths` and all_sensors
+// associations for `sensorPaths` to `chassisPath` (the inventory object bmcweb
+// resolves). A no-op for an empty path, so no association is ever left on an
+// unrelated object (spec §5.6).
+void publishChassisAssociation(
+    sdbusplus::asio::object_server& server,
+    const std::vector<std::string>& psuPaths, std::string_view chassisPath,
+    const std::vector<std::string>& sensorPaths = {});
 
 // Flip the Present/Functional pair on a published slot after startup.
 void setPresentAndFunctional(const PowerSupplyHandles& handles, bool present,

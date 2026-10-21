@@ -142,7 +142,8 @@ PowerSupplyHandleMap publish(sdbusplus::asio::object_server& server,
 
 void publishChassisAssociation(sdbusplus::asio::object_server& server,
                                const std::vector<std::string>& psuPaths,
-                               std::string_view chassisPath)
+                               std::string_view chassisPath,
+                               const std::vector<std::string>& sensorPaths)
 {
     if (chassisPath.empty())
     {
@@ -152,7 +153,7 @@ void publishChassisAssociation(sdbusplus::asio::object_server& server,
     auto chassis =
         server.add_interface(std::string(chassisPath), associationInterface);
     chassis->register_property("Associations",
-                               chassisPoweringAssociations(psuPaths));
+                               chassisAssociations(psuPaths, sensorPaths));
     chassis->initialize();
 }
 

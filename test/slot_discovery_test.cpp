@@ -90,15 +90,19 @@ class FakeInventorySink : public psu::discovery::InventorySink
         return result;
     }
 
-    void publishChassisAssociation(const std::vector<std::string>& psuPaths,
-                                   std::string_view chassisPath) override
+    void publishChassisAssociation(
+        const std::vector<std::string>& psuPaths, std::string_view chassisPath,
+        const std::vector<std::string>& sensorPaths = {}) override
     {
-        publishedChassisAssociations.emplace_back(psuPaths, std::string(chassisPath));
+        publishedChassisAssociations.emplace_back(psuPaths,
+                                                  std::string(chassisPath));
+        publishedSensorAssociations.push_back(sensorPaths);
     }
 
     std::vector<std::vector<psu::inventory::PsuInventory>> publishedInventory;
     std::vector<std::pair<std::vector<std::string>, std::string>>
         publishedChassisAssociations;
+    std::vector<std::vector<std::string>> publishedSensorAssociations;
     std::map<std::string, std::vector<std::pair<bool, bool>>> healthUpdates;
 };
 
@@ -303,10 +307,12 @@ TEST(SlotDiscoveryTest, ResolvesSlotsReadsAssetsAndPublishesInventory)
     ASSERT_EQ(sink.healthUpdates["PSU2"].size(), 1U);
     EXPECT_EQ(sink.healthUpdates["PSU2"][0], (std::pair<bool, bool>{true, false}));
 
-    // Verify chassis association published
+    // Verify chassis association published (both PSU paths and all 20 sensor paths)
     ASSERT_EQ(sink.publishedChassisAssociations.size(), 1U);
     EXPECT_EQ(sink.publishedChassisAssociations[0].second,
               "/xyz/openbmc_project/inventory/system/chassis");
+    ASSERT_EQ(sink.publishedSensorAssociations.size(), 1U);
+    EXPECT_EQ(sink.publishedSensorAssociations[0].size(), 20U);
 }
 
 TEST(SlotDiscoveryTest, ReturnsSlotWithPresentFalseWhenAssetReadFails)

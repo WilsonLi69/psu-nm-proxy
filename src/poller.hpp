@@ -1,6 +1,7 @@
 #pragma once
 
 #include "failure_tracker.hpp"
+#include "inventory.hpp"
 #include "ipmb_reader.hpp"
 #include "operational_state.hpp"
 #include "pmbus.hpp"
@@ -60,8 +61,9 @@ class SensorPublisher
 class DbusSensorPublisher : public SensorPublisher
 {
   public:
-    explicit DbusSensorPublisher(sdbusplus::asio::object_server& server) :
-        server(server)
+    explicit DbusSensorPublisher(sdbusplus::asio::object_server& server,
+                                 std::string inventoryPath = {}) :
+        server(server), inventoryPath(std::move(inventoryPath))
     {}
 
     void publishSensor(std::size_t index, const std::string& path,
@@ -83,6 +85,17 @@ class DbusSensorPublisher : public SensorPublisher
         status->register_property("Functional", initialFunctional);
         status->register_property("State", std::string(initialState));
         status->initialize();
+
+        if (!inventoryPath.empty())
+        {
+            auto assoc = server.add_interface(
+                path, psu::inventory::associationInterface);
+            assoc->register_property(
+                "Associations",
+                std::vector<psu::inventory::Association>{
+                    psu::inventory::sensorInventoryAssociation(inventoryPath)});
+            assoc->initialize();
+        }
 
         addThresholdInterface(path, warningThresholdInterface,
                               thresholds.warning);
@@ -134,6 +147,7 @@ class DbusSensorPublisher : public SensorPublisher
     }
 
     sdbusplus::asio::object_server& server;
+    std::string inventoryPath;
     std::vector<Published> sensors;
 };
 
@@ -155,7 +169,8 @@ class Poller
            FunctionalSink onFunctionalChange = {},
            bool initiallyPresent = true) :
         ownedReader(std::make_unique<IpmbWordReader>(conn, psuAddr8)),
-        ownedPublisher(std::make_unique<DbusSensorPublisher>(server)),
+        ownedPublisher(std::make_unique<DbusSensorPublisher>(
+            server, psu::inventory::powerSupplyPath(psuName))),
         psuName(std::move(psuName)), interval(interval), timer(io),
         sensorCount(sensorDefs.size()), tracker(failuresBeforeNotFunctional),
         reader(*ownedReader), publisher(*ownedPublisher),

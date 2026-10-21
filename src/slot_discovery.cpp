@@ -1,6 +1,7 @@
 #include "slot_discovery.hpp"
 
 #include "nm_command.hpp"
+#include "sensor_set.hpp"
 
 #include <exception>
 #include <iostream>
@@ -190,7 +191,17 @@ void SlotDiscovery::finishDiscovery()
         {
             psuPaths.push_back(psu::inventory::powerSupplyPath(psu.name));
         }
-        attachChassisAssociation(std::move(psuPaths));
+
+        const auto sensorDefs = psu::config::selectSensors(config);
+        std::vector<std::string> sensorPaths;
+        sensorPaths.reserve(activeSlots.size() * sensorDefs.size());
+        for (const auto& [name, _] : activeSlots)
+        {
+            for (const auto* def : sensorDefs)
+            {
+                sensorPaths.push_back(psu::sensors::sensorPath(name, *def));
+            }
+        }
 
         std::vector<DiscoveredSlot> readySlots;
         readySlots.reserve(activeSlots.size());
@@ -222,6 +233,8 @@ void SlotDiscovery::finishDiscovery()
                                 "Discovery successful",
                                 std::move(readySlots)});
         }
+
+        attachChassisAssociation(std::move(psuPaths), std::move(sensorPaths));
     }
     catch (const std::exception& e)
     {
@@ -235,10 +248,12 @@ void SlotDiscovery::finishDiscovery()
     }
 }
 
-void SlotDiscovery::attachChassisAssociation(std::vector<std::string> psuPaths)
+void SlotDiscovery::attachChassisAssociation(
+    std::vector<std::string> psuPaths, std::vector<std::string> sensorPaths)
 {
     mapperClient.findBoardOrChassisPaths(
-        [self = shared_from_this(), psuPaths = std::move(psuPaths)](
+        [self = shared_from_this(), psuPaths = std::move(psuPaths),
+         sensorPaths = std::move(sensorPaths)](
             std::optional<std::vector<std::string>> candidates) mutable {
             std::string chassisPath;
             if (candidates)
@@ -255,9 +270,10 @@ void SlotDiscovery::attachChassisAssociation(std::vector<std::string> psuPaths)
             {
                 try
                 {
-                    self->inventorySink.publishChassisAssociation(psuPaths,
-                                                                  chassisPath);
-                    std::cerr << "psu-nm-proxy: powered_by associations on "
+                    self->inventorySink.publishChassisAssociation(
+                        psuPaths, chassisPath, sensorPaths);
+                    std::cerr << "psu-nm-proxy: powered_by and all_sensors "
+                                 "associations on "
                               << chassisPath << "\n";
                 }
                 catch (const std::exception& e)
@@ -280,11 +296,13 @@ void SlotDiscovery::attachChassisAssociation(std::vector<std::string> psuPaths)
                       << self->config.chassisId << "' yet; retrying\n";
             self->chassisTimer.expires_after(chassisDiscoveryRetry);
             self->chassisTimer.async_wait(
-                [self, psuPaths = std::move(psuPaths)](
+                [self, psuPaths = std::move(psuPaths),
+                 sensorPaths = std::move(sensorPaths)](
                     const boost::system::error_code& ec) mutable {
                     if (!ec)
                     {
-                        self->attachChassisAssociation(std::move(psuPaths));
+                        self->attachChassisAssociation(std::move(psuPaths),
+                                                       std::move(sensorPaths));
                     }
                 });
         });

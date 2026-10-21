@@ -85,7 +85,8 @@ inline constexpr std::array<UnitEntry, 5> unitTable = {{
      {"power", "xyz.openbmc_project.Sensor.Value.Unit.Watts"}},
     {UnitClass::temperature,
      {"temperature", "xyz.openbmc_project.Sensor.Value.Unit.DegreesC"}},
-    {UnitClass::fan, {"fan", "xyz.openbmc_project.Sensor.Value.Unit.RPMS"}},
+    {UnitClass::fan,
+     {"fan_tach", "xyz.openbmc_project.Sensor.Value.Unit.RPMS"}},
 }};
 
 inline UnitInfo unitInfo(UnitClass unit)

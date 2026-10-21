@@ -69,6 +69,8 @@ int main(int argc, char* argv[])
     conn->request_name("xyz.openbmc_project.psu-nm-proxy");
 
     auto server = std::make_shared<sdbusplus::asio::object_server>(conn);
+    server->add_manager("/xyz/openbmc_project/inventory");
+    server->add_manager("/xyz/openbmc_project/sensors");
 
     auto pollers =
         std::make_shared<std::vector<std::unique_ptr<psu::sensors::Poller>>>();

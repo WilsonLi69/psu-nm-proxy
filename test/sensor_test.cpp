@@ -126,7 +126,7 @@ TEST(SensorSet, BuildsUnitTypedSensorPath)
     EXPECT_EQ(psu::sensors::sensorPath("PSU2", defFor("temp1")),
               "/xyz/openbmc_project/sensors/temperature/PSU2_TEMP1");
     EXPECT_EQ(psu::sensors::sensorPath("PSU2", defFor("fan1")),
-              "/xyz/openbmc_project/sensors/fan/PSU2_FAN1");
+              "/xyz/openbmc_project/sensors/fan_tach/PSU2_FAN1");
 }
 
 TEST(SensorSet, UnknownLabelIsNotFound)

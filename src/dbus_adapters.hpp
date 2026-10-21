@@ -98,11 +98,12 @@ class DbusInventorySink : public InventorySink
         return result;
     }
 
-    void publishChassisAssociation(const std::vector<std::string>& psuPaths,
-                                   std::string_view chassisPath) override
+    void publishChassisAssociation(
+        const std::vector<std::string>& psuPaths, std::string_view chassisPath,
+        const std::vector<std::string>& sensorPaths = {}) override
     {
         psu::inventory::publishChassisAssociation(server, psuPaths,
-                                                  chassisPath);
+                                                  chassisPath, sensorPaths);
     }
 
   private:

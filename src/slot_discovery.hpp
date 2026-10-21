@@ -61,7 +61,8 @@ class SlotDiscovery : public std::enable_shared_from_this<SlotDiscovery>
     void readSlotAsset(std::size_t index, const std::string& name,
                        std::uint8_t address8);
     void finishDiscovery();
-    void attachChassisAssociation(std::vector<std::string> psuPaths);
+    void attachChassisAssociation(std::vector<std::string> psuPaths,
+                                  std::vector<std::string> sensorPaths);
 
     boost::asio::io_context& io;
     const psu::config::Config& config;

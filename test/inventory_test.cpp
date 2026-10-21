@@ -149,6 +149,44 @@ TEST(Inventory, NoPsuMeansNoAssociations)
     EXPECT_TRUE(psu::inventory::chassisPoweringAssociations({}).empty());
 }
 
+TEST(Inventory, AllSensorsAndSensorInventoryAssociationTuples)
+{
+    const std::string sensorPath =
+        "/xyz/openbmc_project/sensors/voltage/PSU2_VIN";
+    const std::string psuPath =
+        "/xyz/openbmc_project/inventory/system/power_supply/PSU2";
+
+    EXPECT_EQ(psu::inventory::allSensorsAssociation(sensorPath),
+              (psu::inventory::Association{"all_sensors", "chassis", sensorPath}));
+    EXPECT_EQ(psu::inventory::sensorInventoryAssociation(psuPath),
+              (psu::inventory::Association{"inventory", "sensors", psuPath}));
+}
+
+TEST(Inventory, ChassisAssociationsIncludesBothPoweringAndAllSensors)
+{
+    const std::vector<std::string> psuPaths = {
+        "/xyz/openbmc_project/inventory/system/power_supply/PSU1",
+        "/xyz/openbmc_project/inventory/system/power_supply/PSU2",
+    };
+    const std::vector<std::string> sensorPaths = {
+        "/xyz/openbmc_project/sensors/voltage/PSU1_VIN",
+        "/xyz/openbmc_project/sensors/fan_tach/PSU2_FAN1",
+    };
+
+    const auto associations =
+        psu::inventory::chassisAssociations(psuPaths, sensorPaths);
+
+    ASSERT_EQ(associations.size(), 4U);
+    EXPECT_EQ(associations[0],
+              (psu::inventory::Association{"powered_by", "powering", psuPaths[0]}));
+    EXPECT_EQ(associations[1],
+              (psu::inventory::Association{"powered_by", "powering", psuPaths[1]}));
+    EXPECT_EQ(associations[2],
+              (psu::inventory::Association{"all_sensors", "chassis", sensorPaths[0]}));
+    EXPECT_EQ(associations[3],
+              (psu::inventory::Association{"all_sensors", "chassis", sensorPaths[1]}));
+}
+
 TEST(Inventory, UsableAssetStringIsPrintableNonEmptyAscii)
 {
     EXPECT_TRUE(psu::inventory::usableAssetString("ACBEL"));
