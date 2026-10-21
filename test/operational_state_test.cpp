@@ -114,7 +114,7 @@ TEST(OperationalState, AbsentSlotRestoresPresentAndFunctionalOnCleanRead)
 }
 
 // If a slot is marked absent (currentlyPresent=false), a failed cycle
-// keeps it absent and non-functional (spec §5.7).
+// keeps it absent and non-functional with State=Disabled (spec §5.6/§5.7).
 TEST(OperationalState, AbsentSlotRemainsAbsentOnFailedCycle)
 {
     const auto health =
@@ -122,10 +122,11 @@ TEST(OperationalState, AbsentSlotRemainsAbsentOnFailedCycle)
 
     EXPECT_FALSE(health.present);
     EXPECT_FALSE(health.functional);
+    EXPECT_EQ(health.state, psu::sensors::operationalStateDisabled);
 }
 
 // If a slot is marked absent (currentlyPresent=false), a cycle where sensor reads
-// fail despite status having a value does not restore presence (spec §5.7).
+// fail despite status having a value does not restore presence and keeps State=Disabled (spec §5.6/§5.7).
 TEST(OperationalState, AbsentSlotRemainsAbsentWhenReadsFailDespiteStatus)
 {
     const auto health = psu::sensors::slotHealth(
@@ -133,6 +134,7 @@ TEST(OperationalState, AbsentSlotRemainsAbsentWhenReadsFailDespiteStatus)
 
     EXPECT_FALSE(health.present);
     EXPECT_FALSE(health.functional);
+    EXPECT_EQ(health.state, psu::sensors::operationalStateDisabled);
 }
 
 TEST(OperationalState, HealthEquality)

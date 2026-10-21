@@ -41,7 +41,7 @@ inline SlotHealth
 {
     const bool cleanCycle = readsSucceeded && status.has_value();
     const bool present = currentlyPresent || cleanCycle;
-    const bool disabled = status.has_value() && status->off;
+    const bool disabled = !present || (status.has_value() && status->off);
     const bool functional =
         present && trackerOk && cleanCycle && (status->off || status->powerGood);
     return {present, functional,

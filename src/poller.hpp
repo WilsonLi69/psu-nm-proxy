@@ -37,6 +37,106 @@ inline constexpr auto operationalStatusInterface =
 // power faults and is restored on successful read.
 using FunctionalSink = std::function<void(bool present, bool functional)>;
 
+// Abstract sink for publishing and updating per-slot D-Bus sensor objects
+// (Sensor.Value, OperationalStatus, and Thresholds). Allows Poller to be tested
+// without a live sdbusplus::asio::object_server.
+class SensorPublisher
+{
+  public:
+    virtual ~SensorPublisher() = default;
+
+    virtual void publishSensor(std::size_t index, const std::string& path,
+                               const SensorDef& def, double initialValue,
+                               bool initialFunctional,
+                               std::string_view initialState,
+                               const ThresholdProperties& thresholds) = 0;
+
+    virtual void updateValue(std::size_t index, double value) = 0;
+
+    virtual void updateStatus(std::size_t index, bool functional,
+                              std::string_view state) = 0;
+};
+
+class DbusSensorPublisher : public SensorPublisher
+{
+  public:
+    explicit DbusSensorPublisher(sdbusplus::asio::object_server& server) :
+        server(server)
+    {}
+
+    void publishSensor(std::size_t index, const std::string& path,
+                       const SensorDef& def, double initialValue,
+                       bool initialFunctional, std::string_view initialState,
+                       const ThresholdProperties& thresholds) override
+    {
+        if (index >= sensors.size())
+        {
+            sensors.resize(index + 1);
+        }
+
+        auto value = server.add_interface(path, sensorValueInterface);
+        value->register_property("Value", initialValue);
+        value->register_property("Unit", unitType(def.unit));
+        value->initialize();
+
+        auto status = server.add_interface(path, operationalStatusInterface);
+        status->register_property("Functional", initialFunctional);
+        status->register_property("State", std::string(initialState));
+        status->initialize();
+
+        addThresholdInterface(path, warningThresholdInterface,
+                              thresholds.warning);
+        addThresholdInterface(path, criticalThresholdInterface,
+                              thresholds.critical);
+
+        sensors[index] = Published{std::move(value), std::move(status)};
+    }
+
+    void updateValue(std::size_t index, double value) override
+    {
+        if (index < sensors.size() && sensors[index].value)
+        {
+            sensors[index].value->set_property("Value", value);
+        }
+    }
+
+    void updateStatus(std::size_t index, bool functional,
+                      std::string_view state) override
+    {
+        if (index < sensors.size() && sensors[index].status)
+        {
+            sensors[index].status->set_property("Functional", functional);
+            sensors[index].status->set_property("State", std::string(state));
+        }
+    }
+
+  private:
+    struct Published
+    {
+        std::shared_ptr<sdbusplus::asio::dbus_interface> value;
+        std::shared_ptr<sdbusplus::asio::dbus_interface> status;
+    };
+
+    void addThresholdInterface(const std::string& path,
+                               const char* interfaceName,
+                               const std::map<std::string, double>& properties)
+    {
+        if (properties.empty())
+        {
+            return;
+        }
+        auto iface = server.add_interface(path, interfaceName);
+        for (const auto& [name, value] : properties)
+        {
+            iface->register_property(name, value);
+        }
+        iface->initialize();
+    }
+
+    sdbusplus::asio::object_server& server;
+    std::vector<Published> sensors;
+};
+
 // Publishes the §8 sensor set for one PSU and refreshes it every interval.
 // Unconditional polling: never gated on host power state (spec §5.4).
 //
@@ -54,13 +154,32 @@ class Poller
            std::map<std::string, Thresholds> thresholds = {},
            FunctionalSink onFunctionalChange = {},
            bool initiallyPresent = true) :
-        server(server), psuName(std::move(psuName)), interval(interval),
-        timer(io), tracker(failuresBeforeNotFunctional),
-        reader(conn, psuAddr8), cycle(reader, sensorDefs),
+        ownedReader(std::make_unique<IpmbWordReader>(conn, psuAddr8)),
+        ownedPublisher(std::make_unique<DbusSensorPublisher>(server)),
+        psuName(std::move(psuName)), interval(interval), timer(io),
+        sensorCount(sensorDefs.size()), tracker(failuresBeforeNotFunctional),
+        reader(*ownedReader), publisher(*ownedPublisher),
+        cycle(reader, sensorDefs), thresholds(std::move(thresholds)),
+        onFunctionalChange(std::move(onFunctionalChange)),
+        lastPresent(initiallyPresent), lastFunctional(initiallyPresent)
+    {
+        addSensors(sensorDefs);
+    }
+
+    Poller(boost::asio::io_context& io, WordReader& reader,
+           SensorPublisher& publisher, std::string psuName,
+           std::chrono::milliseconds interval,
+           std::size_t failuresBeforeNotFunctional,
+           std::vector<const SensorDef*> sensorDefs,
+           std::map<std::string, Thresholds> thresholds = {},
+           FunctionalSink onFunctionalChange = {},
+           bool initiallyPresent = true) :
+        psuName(std::move(psuName)), interval(interval), timer(io),
+        sensorCount(sensorDefs.size()), tracker(failuresBeforeNotFunctional),
+        reader(reader), publisher(publisher), cycle(reader, sensorDefs),
         thresholds(std::move(thresholds)),
         onFunctionalChange(std::move(onFunctionalChange)),
-        lastPresent(initiallyPresent),
-        lastFunctional(initiallyPresent)
+        lastPresent(initiallyPresent), lastFunctional(initiallyPresent)
     {
         addSensors(sensorDefs);
     }
@@ -84,7 +203,6 @@ class Poller
         return lastFunctional;
     }
 
-
     void start()
     {
         // Read VOUT_MODE once, asynchronously, before the first cycle so
@@ -102,68 +220,24 @@ class Poller
   private:
     static constexpr int defaultVoutExponent = -4;
 
-    struct Published
-    {
-        const SensorDef* def;
-        std::shared_ptr<sdbusplus::asio::dbus_interface> value;
-        std::shared_ptr<sdbusplus::asio::dbus_interface> status;
-    };
-
     void addSensors(const std::vector<const SensorDef*>& defs)
     {
-        for (const auto* def : defs)
+        const auto init = initialSensorState(lastPresent);
+        for (std::size_t i = 0; i < defs.size(); ++i)
         {
+            const auto* def = defs[i];
             const std::string path = sensorPath(psuName, *def);
 
-            auto value = server.add_interface(path, sensorValueInterface);
-            value->register_property("Value", 0.0);
-            value->register_property("Unit", unitType(def->unit));
-            value->initialize();
+            ThresholdProperties threshProps;
+            const auto it = thresholds.find(std::string(def->label));
+            if (it != thresholds.end())
+            {
+                threshProps = thresholdProperties(it->second);
+            }
 
-            auto status =
-                server.add_interface(path, operationalStatusInterface);
-            status->register_property("Functional", true);
-            status->register_property("State",
-                                      std::string(operationalStateEnabled));
-            status->initialize();
-
-            addThresholds(path, def->label);
-
-            sensors.push_back(
-                Published{def, std::move(value), std::move(status)});
+            publisher.publishSensor(i, path, *def, init.value, init.functional,
+                                    init.state, threshProps);
         }
-    }
-
-    // Register the configured threshold interfaces on the sensor's own path
-    // (spec §5.6). A label with no configured thresholds publishes nothing.
-    void addThresholds(const std::string& path, std::string_view label)
-    {
-        const auto it = thresholds.find(std::string(label));
-        if (it == thresholds.end())
-        {
-            return;
-        }
-
-        const auto props = thresholdProperties(it->second);
-        addThresholdInterface(path, warningThresholdInterface, props.warning);
-        addThresholdInterface(path, criticalThresholdInterface,
-                              props.critical);
-    }
-
-    void addThresholdInterface(const std::string& path,
-                               const char* interfaceName,
-                               const std::map<std::string, double>& properties)
-    {
-        if (properties.empty())
-        {
-            return;
-        }
-        auto iface = server.add_interface(path, interfaceName);
-        for (const auto& [name, value] : properties)
-        {
-            iface->register_property(name, value);
-        }
-        iface->initialize();
     }
 
     void poll()
@@ -173,10 +247,7 @@ class Poller
         cycle.run(
             voutExponent,
             [this](std::size_t index, double value) {
-                if (index < sensors.size())
-                {
-                    sensors[index].value->set_property("Value", value);
-                }
+                publisher.updateValue(index, value);
             },
             [this](CycleResult result) {
                 applyCycle(result);
@@ -212,10 +283,9 @@ class Poller
         const auto health =
             slotHealth(lastPresent, tracker.functional(), result.status,
                        result.readsSucceeded);
-        for (auto& sensor : sensors)
+        for (std::size_t i = 0; i < sensorCount; ++i)
         {
-            sensor.status->set_property("Functional", health.functional);
-            sensor.status->set_property("State", std::string(health.state));
+            publisher.updateStatus(i, health.functional, health.state);
         }
         publishFailureTransition(health.present, health.functional);
     }
@@ -271,14 +341,16 @@ class Poller
         }
     }
 
-    sdbusplus::asio::object_server& server;
+    std::unique_ptr<IpmbWordReader> ownedReader;
+    std::unique_ptr<DbusSensorPublisher> ownedPublisher;
     std::string psuName;
     std::chrono::milliseconds interval;
     boost::asio::steady_timer timer;
-    std::vector<Published> sensors;
+    std::size_t sensorCount = 0;
     int voutExponent = defaultVoutExponent;
     FailureTracker tracker;
-    IpmbWordReader reader;
+    WordReader& reader;
+    SensorPublisher& publisher;
     PollCycle cycle;
     std::map<std::string, Thresholds> thresholds;
     FunctionalSink onFunctionalChange;

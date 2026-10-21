@@ -449,7 +449,7 @@ std::vector<ResolvedSlot>
     resolveSlots(const Config& config,
                  const std::vector<psu::nm::PsuSlot>& discovered)
 {
-    const auto addressFor = [&discovered](std::uint8_t number)
+    const auto addressFor = [&config, &discovered](std::uint8_t number)
         -> std::optional<std::uint8_t> {
         for (const auto& slot : discovered)
         {
@@ -457,6 +457,11 @@ std::vector<ResolvedSlot>
             {
                 return slot.address8;
             }
+        }
+        if (const auto it = config.psuAddresses.find(number);
+            it != config.psuAddresses.end())
+        {
+            return it->second;
         }
         return std::nullopt;
     };

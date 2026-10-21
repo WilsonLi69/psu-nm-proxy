@@ -135,16 +135,13 @@ void SlotDiscovery::onPsuConfigResolved(
     {
         inventory.push_back(
             psu::inventory::makeInventory(slot.name, std::nullopt));
-    }
-
-    assetsPending = 0;
-    for (const auto& slot : resolved)
-    {
         if (slot.address8)
         {
-            ++assetsPending;
+            activeSlots.emplace_back(slot.name, *slot.address8);
         }
     }
+
+    assetsPending = activeSlots.size();
     if (assetsPending == 0)
     {
         finishDiscovery();
@@ -166,13 +163,12 @@ void SlotDiscovery::readSlotAsset(std::size_t index, const std::string& name,
 {
     nmClient.readAsset(
         address8,
-        [self = shared_from_this(), index, name, address8](
+        [self = shared_from_this(), index, name](
             std::optional<psu::inventory::PsuAsset> asset) {
             if (asset)
             {
                 self->inventory[index] =
                     psu::inventory::makeInventory(name, asset);
-                self->activeSlots.emplace_back(name, address8);
             }
 
             if (--self->assetsPending == 0)
@@ -206,8 +202,17 @@ void SlotDiscovery::finishDiscovery()
             {
                 updater = it->second;
             }
+            bool present = false;
+            for (const auto& psu : inventory)
+            {
+                if (psu.name == name)
+                {
+                    present = psu.present;
+                    break;
+                }
+            }
             readySlots.push_back(
-                DiscoveredSlot{name, address8, std::move(updater)});
+                DiscoveredSlot{name, address8, std::move(updater), present});
         }
 
         if (callback)

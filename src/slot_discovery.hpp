@@ -23,6 +23,7 @@ struct DiscoveredSlot
     std::string name;
     std::uint8_t address8;
     std::function<void(bool present, bool functional)> updateInventoryHealth;
+    bool present = false;
 };
 
 struct DiscoveryOutcome

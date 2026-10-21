@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -131,4 +132,22 @@ TEST(SensorSet, BuildsUnitTypedSensorPath)
 TEST(SensorSet, UnknownLabelIsNotFound)
 {
     EXPECT_EQ(psu::sensors::findSensor("nope"), nullptr);
+}
+
+TEST(SensorInitialState, PopulatedSlotInitializesWithZeroFunctionalAndEnabled)
+{
+    const auto state = psu::sensors::initialSensorState(true);
+
+    EXPECT_DOUBLE_EQ(state.value, 0.0);
+    EXPECT_TRUE(state.functional);
+    EXPECT_EQ(state.state, "xyz.openbmc_project.State.Decorator.OperationalStatus.State.Enabled");
+}
+
+TEST(SensorInitialState, UnpopulatedSlotInitializesWithNaNNotFunctionalAndDisabled)
+{
+    const auto state = psu::sensors::initialSensorState(false);
+
+    EXPECT_TRUE(std::isnan(state.value));
+    EXPECT_FALSE(state.functional);
+    EXPECT_EQ(state.state, "xyz.openbmc_project.State.Decorator.OperationalStatus.State.Disabled");
 }

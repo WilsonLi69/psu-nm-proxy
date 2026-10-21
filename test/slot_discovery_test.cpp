@@ -241,6 +241,7 @@ TEST(SlotDiscoveryTest, ResolvesSlotsReadsAssetsAndPublishesInventory)
     boost::asio::io_context io;
     psu::config::Config config;
     config.expectedSlots = {1, 2};
+    config.psuAddresses = {{1, 0xB0}, {2, 0xB2}};
     config.chassisId = "chassis";
 
     FakeNodeManagerClient nm;
@@ -248,12 +249,13 @@ TEST(SlotDiscoveryTest, ResolvesSlotsReadsAssetsAndPublishesInventory)
     FakeInventorySink sink;
 
     nm.capabilitiesResponse = validCapabilities();
-    // D8h returns Slot 2 configured at 0xB2
+    // D8h returns Slot 2 configured at 0xB2 (Slot 1 falls back to psuAddresses)
     std::vector<std::uint8_t> d8(9, 0);
     d8[2] = 0xB2;
     nm.psuConfigResponse = d8;
 
-    // Slot 2 asset response
+    // Slot 1 asset times out (absent at boot), Slot 2 asset responds (present)
+    nm.assetResponses[0xB0] = std::nullopt;
     nm.assetResponses[0xB2] = psu::inventory::PsuAsset{"ACBEL", "R1BA2751A-P00A"};
 
     // Chassis path
@@ -272,9 +274,13 @@ TEST(SlotDiscoveryTest, ResolvesSlotsReadsAssetsAndPublishesInventory)
     ASSERT_TRUE(outcome.has_value());
     EXPECT_EQ(outcome->status,
               psu::discovery::DiscoveryOutcome::Status::success);
-    ASSERT_EQ(outcome->slots.size(), 1U);
-    EXPECT_EQ(outcome->slots[0].name, "PSU2");
-    EXPECT_EQ(outcome->slots[0].address8, 0xB2);
+    ASSERT_EQ(outcome->slots.size(), 2U);
+    EXPECT_EQ(outcome->slots[0].name, "PSU1");
+    EXPECT_EQ(outcome->slots[0].address8, 0xB0);
+    EXPECT_FALSE(outcome->slots[0].present);
+    EXPECT_EQ(outcome->slots[1].name, "PSU2");
+    EXPECT_EQ(outcome->slots[1].address8, 0xB2);
+    EXPECT_TRUE(outcome->slots[1].present);
 
     // Verify published inventory: 2 items (PSU1 absent, PSU2 present)
     ASSERT_EQ(sink.publishedInventory.size(), 1U);
@@ -282,12 +288,18 @@ TEST(SlotDiscoveryTest, ResolvesSlotsReadsAssetsAndPublishesInventory)
     ASSERT_EQ(inv.size(), 2U);
     EXPECT_EQ(inv[0].name, "PSU1");
     EXPECT_FALSE(inv[0].present);
+    EXPECT_FALSE(inv[0].functional);
     EXPECT_EQ(inv[1].name, "PSU2");
     EXPECT_TRUE(inv[1].present);
+    EXPECT_TRUE(inv[1].functional);
     EXPECT_EQ(inv[1].manufacturer, "ACBEL");
 
-    // Verify health callback linkage
-    outcome->slots[0].updateInventoryHealth(true, false);
+    // Verify health callback linkage for both unpopulated and populated slots
+    outcome->slots[0].updateInventoryHealth(true, true);
+    ASSERT_EQ(sink.healthUpdates["PSU1"].size(), 1U);
+    EXPECT_EQ(sink.healthUpdates["PSU1"][0], (std::pair<bool, bool>{true, true}));
+
+    outcome->slots[1].updateInventoryHealth(true, false);
     ASSERT_EQ(sink.healthUpdates["PSU2"].size(), 1U);
     EXPECT_EQ(sink.healthUpdates["PSU2"][0], (std::pair<bool, bool>{true, false}));
 
@@ -297,10 +309,11 @@ TEST(SlotDiscoveryTest, ResolvesSlotsReadsAssetsAndPublishesInventory)
               "/xyz/openbmc_project/inventory/system/chassis");
 }
 
-TEST(SlotDiscoveryTest, IgnoresSlotWhenAssetReadFails)
+TEST(SlotDiscoveryTest, ReturnsSlotWithPresentFalseWhenAssetReadFails)
 {
     boost::asio::io_context io;
     psu::config::Config config;
+    config.expectedSlots = {1};
 
     FakeNodeManagerClient nm;
     FakeObjectMapperClient mapper;
@@ -326,13 +339,17 @@ TEST(SlotDiscoveryTest, IgnoresSlotWhenAssetReadFails)
     ASSERT_TRUE(outcome.has_value());
     EXPECT_EQ(outcome->status,
               psu::discovery::DiscoveryOutcome::Status::success);
-    // Active ready slots must be empty because asset read failed
-    EXPECT_TRUE(outcome->slots.empty());
+    // Unpopulated slot is still returned for poller & sensor provisioning with present = false
+    ASSERT_EQ(outcome->slots.size(), 1U);
+    EXPECT_EQ(outcome->slots[0].name, "PSU1");
+    EXPECT_EQ(outcome->slots[0].address8, 0xB0);
+    EXPECT_FALSE(outcome->slots[0].present);
 
-    // Published inventory still has PSU1 marked absent
+    // Published inventory has PSU1 marked absent and not functional
     ASSERT_EQ(sink.publishedInventory.size(), 1U);
     ASSERT_EQ(sink.publishedInventory[0].size(), 1U);
     EXPECT_FALSE(sink.publishedInventory[0][0].present);
+    EXPECT_FALSE(sink.publishedInventory[0][0].functional);
 }
 
 

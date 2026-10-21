@@ -261,8 +261,8 @@ TEST(ConfigResolution, ExpectedSlotsAndDiscoveryAreUnioned)
     EXPECT_EQ(slots[1], (ResolvedSlot{1, 0xB0, "PSU1"}));
 }
 
-// An expected slot that D8h does not report is still represented, with no
-// address, so it is published but never polled (spec §5.6).
+// An expected slot that D8h does not report falls back to config.psuAddresses
+// when configured, or has no address when neither D8h nor psuAddresses has it.
 TEST(ConfigResolution, ExpectedSlotNotDiscoveredIsStillRepresented)
 {
     Config cfg;
@@ -275,6 +275,20 @@ TEST(ConfigResolution, ExpectedSlotNotDiscoveredIsStillRepresented)
     EXPECT_EQ(slots[0], (ResolvedSlot{1, std::nullopt, "PSU1"}));
     EXPECT_EQ(slots[1], (ResolvedSlot{3, std::nullopt, "PSU3"}));
     EXPECT_EQ(slots[2], (ResolvedSlot{2, 0xB2, "PSU2"}));
+}
+
+TEST(ConfigResolution, ExpectedSlotNotInD8hUsesConfiguredPsuAddress)
+{
+    Config cfg;
+    cfg.expectedSlots = {1, 2};
+    cfg.psuAddresses = {{1, 0xB0}, {2, 0xB2}};
+    const std::vector<PsuSlot> discovered = {{2, 0xB2}};
+
+    const auto slots = psu::config::resolveSlots(cfg, discovered);
+
+    ASSERT_EQ(slots.size(), 2U);
+    EXPECT_EQ(slots[0], (ResolvedSlot{1, 0xB0, "PSU1"}));
+    EXPECT_EQ(slots[1], (ResolvedSlot{2, 0xB2, "PSU2"}));
 }
 
 TEST(ConfigSensors, DefaultWhitelistSelectsEverySection8Label)

@@ -2,6 +2,7 @@
 
 #include "failure_tracker.hpp"
 #include "operational_state.hpp"
+#include "poller.hpp"
 
 #include <gtest/gtest.h>
 
@@ -9,10 +10,12 @@
 #include <boost/asio/steady_timer.hpp>
 
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <map>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -63,6 +66,55 @@ const psu::sensors::SensorDef* sensorDef(const char* label)
 {
     return psu::sensors::findSensor(label);
 }
+
+class FakeSensorPublisher : public psu::sensors::SensorPublisher
+{
+  public:
+    struct SensorRecord
+    {
+        std::string path;
+        std::string_view label;
+        double value = 0.0;
+        bool functional = false;
+        std::string state;
+        psu::sensors::ThresholdProperties thresholds;
+    };
+
+    void publishSensor(std::size_t index, const std::string& path,
+                       const psu::sensors::SensorDef& def, double initialValue,
+                       bool initialFunctional, std::string_view initialState,
+                       const psu::sensors::ThresholdProperties& thresholds)
+        override
+    {
+        if (index >= sensors.size())
+        {
+            sensors.resize(index + 1);
+        }
+        sensors[index] = SensorRecord{path, def.label, initialValue,
+                                      initialFunctional,
+                                      std::string(initialState), thresholds};
+    }
+
+    void updateValue(std::size_t index, double value) override
+    {
+        if (index < sensors.size())
+        {
+            sensors[index].value = value;
+        }
+    }
+
+    void updateStatus(std::size_t index, bool functional,
+                      std::string_view state) override
+    {
+        if (index < sensors.size())
+        {
+            sensors[index].functional = functional;
+            sensors[index].state = std::string(state);
+        }
+    }
+
+    std::vector<SensorRecord> sensors;
+};
 
 } // namespace
 
@@ -292,4 +344,77 @@ TEST(PollCycle, CleanPollCycleRestoresFunctionalAfterTransientFailure)
         true, tracker.functional(), result->status, result->readsSucceeded);
     EXPECT_TRUE(health.present);
     EXPECT_TRUE(health.functional);
+}
+
+TEST(PollerInitTest, UnpopulatedSlotInitializesSensorsWithNaNDisabledAndNotFunctional)
+{
+    boost::asio::io_context io;
+    ScriptedReader reader;
+    FakeSensorPublisher publisher;
+    std::vector<const psu::sensors::SensorDef*> defs = {
+        sensorDef("vin"), sensorDef("vout"), sensorDef("temp1")};
+
+    psu::sensors::Poller poller(
+        io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
+        defs, {}, {}, /*initiallyPresent=*/false);
+
+    EXPECT_FALSE(poller.isPresent());
+    EXPECT_FALSE(poller.isFunctional());
+    ASSERT_EQ(publisher.sensors.size(), 3U);
+
+    for (const auto& s : publisher.sensors)
+    {
+        EXPECT_TRUE(std::isnan(s.value)) << s.path;
+        EXPECT_FALSE(s.functional) << s.path;
+        EXPECT_EQ(s.state, psu::sensors::operationalStateDisabled) << s.path;
+    }
+
+    // Start polling on an unpopulated slot where all reads fail/time out:
+    // values remain NaN, Functional=false, State=Disabled.
+    poller.start();
+    EXPECT_FALSE(poller.isPresent());
+    EXPECT_FALSE(poller.isFunctional());
+    for (const auto& s : publisher.sensors)
+    {
+        EXPECT_TRUE(std::isnan(s.value)) << s.path;
+        EXPECT_FALSE(s.functional) << s.path;
+        EXPECT_EQ(s.state, psu::sensors::operationalStateDisabled) << s.path;
+    }
+}
+
+TEST(PollerInitTest, PopulatedSlotInitializesSensorsAndUpdatesLiveValuesOnStart)
+{
+    boost::asio::io_context io;
+    ScriptedReader reader;
+    reader.responses[0x20] = 0x001C; // VOUT_MODE -> N = -4
+    reader.responses[0x88] = 0x0002; // vin -> 2.0
+    reader.responses[0x8B] = 0x00C0; // vout -> 12.0
+    reader.responses[0x79] = 0x0000; // STATUS_WORD running, powerGood
+
+    FakeSensorPublisher publisher;
+    std::vector<const psu::sensors::SensorDef*> defs = {sensorDef("vin"),
+                                                        sensorDef("vout")};
+
+    psu::sensors::Poller poller(
+        io, reader, publisher, "PSU2", std::chrono::milliseconds(1000), 3,
+        defs, {}, {}, /*initiallyPresent=*/true);
+
+    EXPECT_TRUE(poller.isPresent());
+    EXPECT_TRUE(poller.isFunctional());
+    ASSERT_EQ(publisher.sensors.size(), 2U);
+    for (const auto& s : publisher.sensors)
+    {
+        EXPECT_DOUBLE_EQ(s.value, 0.0);
+        EXPECT_TRUE(s.functional);
+        EXPECT_EQ(s.state, psu::sensors::operationalStateEnabled);
+    }
+
+    poller.start();
+
+    EXPECT_TRUE(poller.isPresent());
+    EXPECT_TRUE(poller.isFunctional());
+    EXPECT_DOUBLE_EQ(publisher.sensors[0].value, 2.0);
+    EXPECT_DOUBLE_EQ(publisher.sensors[1].value, 12.0);
+    EXPECT_TRUE(publisher.sensors[0].functional);
+    EXPECT_EQ(publisher.sensors[0].state, psu::sensors::operationalStateEnabled);
 }

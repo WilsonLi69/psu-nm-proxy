@@ -61,8 +61,8 @@ std::string nameFor(const Config& config, std::uint8_t slot);
 std::array<std::uint8_t, 8> psuAddressBytes(const Config& config);
 
 // One PSU slot to publish, from the union of the configured expectedSlots and
-// the slots D8h discovered. An expected slot D8h did not report has no address
-// (address8 is empty) so it is published but never polled (spec §5.6).
+// the slots D8h discovered. An expected slot D8h did not report falls back to
+// its configured psuAddresses entry when present (spec §5.6).
 struct ResolvedSlot
 {
     std::uint8_t number;

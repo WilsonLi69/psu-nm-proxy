@@ -100,7 +100,8 @@ int main(int argc, char* argv[])
                 auto poller = std::make_unique<psu::sensors::Poller>(
                     io, *conn, *server, slot.name, slot.address8, pollInterval,
                     config.failuresBeforeNotFunctional, sensorDefs,
-                    config.thresholds, slot.updateInventoryHealth);
+                    config.thresholds, slot.updateInventoryHealth,
+                    slot.present);
                 poller->start();
                 pollers->push_back(std::move(poller));
             }
