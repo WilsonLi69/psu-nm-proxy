@@ -204,12 +204,13 @@ inline const SensorDef* findSensor(std::string_view label)
 
 // Initial D-Bus property values for a published sensor object at startup
 // (spec §5.6): populated slots start at Value=0.0, Functional=true,
-// State=Enabled; unpopulated slots start at Value=NaN, Functional=false,
-// State=Disabled.
+// Available=true, State=Enabled; unpopulated slots start at Value=NaN,
+// Functional=false, Available=false, State=Disabled.
 struct InitialSensorState
 {
     double value;
     bool functional;
+    bool available;
     std::string_view state;
 };
 
@@ -217,10 +218,10 @@ inline constexpr InitialSensorState initialSensorState(bool initiallyPresent)
 {
     if (initiallyPresent)
     {
-        return {0.0, true,
+        return {0.0, true, true,
                 "xyz.openbmc_project.State.Decorator.OperationalStatus.State.Enabled"};
     }
-    return {std::numeric_limits<double>::quiet_NaN(), false,
+    return {std::numeric_limits<double>::quiet_NaN(), false, false,
             "xyz.openbmc_project.State.Decorator.OperationalStatus.State.Disabled"};
 }
 

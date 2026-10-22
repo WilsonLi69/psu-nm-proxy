@@ -18,6 +18,8 @@ TEST(Inventory, InterfaceAndPathConstants)
               "xyz.openbmc_project.Inventory.Item");
     EXPECT_EQ(psu::inventory::operationalStatusInterface,
               "xyz.openbmc_project.State.Decorator.OperationalStatus");
+    EXPECT_EQ(psu::inventory::availabilityInterface,
+              "xyz.openbmc_project.State.Decorator.Availability");
     EXPECT_EQ(psu::inventory::associationInterface,
               "xyz.openbmc_project.Association.Definitions");
     EXPECT_EQ(psu::inventory::boardInterface,
@@ -77,6 +79,7 @@ TEST(Inventory, PresentSlotCarriesAssetAndFunctional)
 
     EXPECT_EQ(inv.name, "PSU2");
     EXPECT_TRUE(inv.present);
+    EXPECT_TRUE(inv.available);
     EXPECT_TRUE(inv.functional);
     EXPECT_EQ(inv.manufacturer, "ACBEL");
     EXPECT_EQ(inv.model, "R1BA2751A-P00A");
@@ -88,6 +91,7 @@ TEST(Inventory, EmptySlotIsAbsentAndNotFunctional)
 
     EXPECT_EQ(inv.name, "PSU1");
     EXPECT_FALSE(inv.present);
+    EXPECT_FALSE(inv.available);
     EXPECT_FALSE(inv.functional);
     EXPECT_EQ(inv.manufacturer, "");
     EXPECT_EQ(inv.model, "");

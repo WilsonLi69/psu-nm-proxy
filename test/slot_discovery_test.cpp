@@ -292,9 +292,11 @@ TEST(SlotDiscoveryTest, ResolvesSlotsReadsAssetsAndPublishesInventory)
     ASSERT_EQ(inv.size(), 2U);
     EXPECT_EQ(inv[0].name, "PSU1");
     EXPECT_FALSE(inv[0].present);
+    EXPECT_FALSE(inv[0].available);
     EXPECT_FALSE(inv[0].functional);
     EXPECT_EQ(inv[1].name, "PSU2");
     EXPECT_TRUE(inv[1].present);
+    EXPECT_TRUE(inv[1].available);
     EXPECT_TRUE(inv[1].functional);
     EXPECT_EQ(inv[1].manufacturer, "ACBEL");
 
@@ -351,10 +353,11 @@ TEST(SlotDiscoveryTest, ReturnsSlotWithPresentFalseWhenAssetReadFails)
     EXPECT_EQ(outcome->slots[0].address8, 0xB0);
     EXPECT_FALSE(outcome->slots[0].present);
 
-    // Published inventory has PSU1 marked absent and not functional
+    // Published inventory has PSU1 marked absent, not available, and not functional
     ASSERT_EQ(sink.publishedInventory.size(), 1U);
     ASSERT_EQ(sink.publishedInventory[0].size(), 1U);
     EXPECT_FALSE(sink.publishedInventory[0][0].present);
+    EXPECT_FALSE(sink.publishedInventory[0][0].available);
     EXPECT_FALSE(sink.publishedInventory[0][0].functional);
 }
 

@@ -31,6 +31,8 @@ namespace psu::sensors
 inline constexpr auto sensorValueInterface = "xyz.openbmc_project.Sensor.Value";
 inline constexpr auto operationalStatusInterface =
     "xyz.openbmc_project.State.Decorator.OperationalStatus";
+inline constexpr auto availabilityInterface =
+    "xyz.openbmc_project.State.Decorator.Availability";
 
 // Called whenever a slot's Present/Functional pair changes (spec §5.7):
 // Present is decoupled from transient communication failures and restored on
@@ -39,8 +41,8 @@ inline constexpr auto operationalStatusInterface =
 using FunctionalSink = std::function<void(bool present, bool functional)>;
 
 // Abstract sink for publishing and updating per-slot D-Bus sensor objects
-// (Sensor.Value, OperationalStatus, and Thresholds). Allows Poller to be tested
-// without a live sdbusplus::asio::object_server.
+// (Sensor.Value, Availability, OperationalStatus, and Thresholds). Allows Poller
+// to be tested without a live sdbusplus::asio::object_server.
 class SensorPublisher
 {
   public:
@@ -48,14 +50,15 @@ class SensorPublisher
 
     virtual void publishSensor(std::size_t index, const std::string& path,
                                const SensorDef& def, double initialValue,
-                               bool initialFunctional,
+                               bool initialFunctional, bool initialAvailable,
                                std::string_view initialState,
                                const ThresholdProperties& thresholds) = 0;
 
     virtual void updateValue(std::size_t index, double value) = 0;
 
     virtual void updateStatus(std::size_t index, bool functional,
-                              std::string_view state) = 0;
+                              std::string_view state,
+                              std::optional<bool> available = std::nullopt) = 0;
 };
 
 class DbusSensorPublisher : public SensorPublisher
@@ -68,7 +71,8 @@ class DbusSensorPublisher : public SensorPublisher
 
     void publishSensor(std::size_t index, const std::string& path,
                        const SensorDef& def, double initialValue,
-                       bool initialFunctional, std::string_view initialState,
+                       bool initialFunctional, bool initialAvailable,
+                       std::string_view initialState,
                        const ThresholdProperties& thresholds) override
     {
         if (index >= sensors.size())
@@ -80,6 +84,10 @@ class DbusSensorPublisher : public SensorPublisher
         value->register_property("Value", initialValue);
         value->register_property("Unit", unitType(def.unit));
         value->initialize();
+
+        auto avail = server.add_interface(path, availabilityInterface);
+        avail->register_property("Available", initialAvailable);
+        avail->initialize();
 
         auto status = server.add_interface(path, operationalStatusInterface);
         status->register_property("Functional", initialFunctional);
@@ -102,7 +110,8 @@ class DbusSensorPublisher : public SensorPublisher
         addThresholdInterface(path, criticalThresholdInterface,
                               thresholds.critical);
 
-        sensors[index] = Published{std::move(value), std::move(status)};
+        sensors[index] = Published{std::move(value), std::move(status),
+                                   std::move(avail)};
     }
 
     void updateValue(std::size_t index, double value) override
@@ -114,12 +123,20 @@ class DbusSensorPublisher : public SensorPublisher
     }
 
     void updateStatus(std::size_t index, bool functional,
-                      std::string_view state) override
+                      std::string_view state,
+                      std::optional<bool> available = std::nullopt) override
     {
-        if (index < sensors.size() && sensors[index].status)
+        if (index < sensors.size())
         {
-            sensors[index].status->set_property("Functional", functional);
-            sensors[index].status->set_property("State", std::string(state));
+            if (sensors[index].status)
+            {
+                sensors[index].status->set_property("Functional", functional);
+                sensors[index].status->set_property("State", std::string(state));
+            }
+            if (sensors[index].availability && available.has_value())
+            {
+                sensors[index].availability->set_property("Available", *available);
+            }
         }
     }
 
@@ -128,6 +145,7 @@ class DbusSensorPublisher : public SensorPublisher
     {
         std::shared_ptr<sdbusplus::asio::dbus_interface> value;
         std::shared_ptr<sdbusplus::asio::dbus_interface> status;
+        std::shared_ptr<sdbusplus::asio::dbus_interface> availability;
     };
 
     void addThresholdInterface(const std::string& path,
@@ -251,7 +269,7 @@ class Poller
             }
 
             publisher.publishSensor(i, path, *def, init.value, init.functional,
-                                    init.state, threshProps);
+                                    init.available, init.state, threshProps);
         }
     }
 

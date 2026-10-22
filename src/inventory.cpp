@@ -129,12 +129,17 @@ PowerSupplyHandleMap publish(sdbusplus::asio::object_server& server,
         item->register_property("Present", psu.present);
         item->initialize();
 
+        auto avail = server.add_interface(path, availabilityInterface);
+        avail->register_property("Available", psu.available);
+        avail->initialize();
+
         auto status = server.add_interface(path, operationalStatusInterface);
         status->register_property("Functional", psu.functional);
         status->initialize();
 
         handles.emplace(psu.name,
-                        PowerSupplyHandles{std::move(item), std::move(status)});
+                        PowerSupplyHandles{std::move(item), std::move(status),
+                                           std::move(avail)});
     }
 
     return handles;
@@ -158,7 +163,8 @@ void publishChassisAssociation(sdbusplus::asio::object_server& server,
 }
 
 void setPresentAndFunctional(const PowerSupplyHandles& handles, bool present,
-                             bool functional)
+                             bool functional,
+                             std::optional<bool> available)
 {
     if (handles.item)
     {
@@ -167,6 +173,11 @@ void setPresentAndFunctional(const PowerSupplyHandles& handles, bool present,
     if (handles.status)
     {
         handles.status->set_property("Functional", functional);
+    }
+    if (handles.availability)
+    {
+        const bool isAvail = available.value_or(present && functional);
+        handles.availability->set_property("Available", isAvail);
     }
 }
 

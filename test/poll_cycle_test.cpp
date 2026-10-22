@@ -76,13 +76,15 @@ class FakeSensorPublisher : public psu::sensors::SensorPublisher
         std::string_view label;
         double value = 0.0;
         bool functional = false;
+        bool available = false;
         std::string state;
         psu::sensors::ThresholdProperties thresholds;
     };
 
     void publishSensor(std::size_t index, const std::string& path,
                        const psu::sensors::SensorDef& def, double initialValue,
-                       bool initialFunctional, std::string_view initialState,
+                       bool initialFunctional, bool initialAvailable,
+                       std::string_view initialState,
                        const psu::sensors::ThresholdProperties& thresholds)
         override
     {
@@ -90,9 +92,14 @@ class FakeSensorPublisher : public psu::sensors::SensorPublisher
         {
             sensors.resize(index + 1);
         }
-        sensors[index] = SensorRecord{path, def.label, initialValue,
-                                      initialFunctional,
-                                      std::string(initialState), thresholds};
+        sensors[index] =
+            SensorRecord{path,
+                         def.label,
+                         initialValue,
+                         initialFunctional,
+                         initialAvailable,
+                         std::string(initialState),
+                         thresholds};
     }
 
     void updateValue(std::size_t index, double value) override
@@ -104,12 +111,17 @@ class FakeSensorPublisher : public psu::sensors::SensorPublisher
     }
 
     void updateStatus(std::size_t index, bool functional,
-                      std::string_view state) override
+                      std::string_view state,
+                      std::optional<bool> available = std::nullopt) override
     {
         if (index < sensors.size())
         {
             sensors[index].functional = functional;
             sensors[index].state = std::string(state);
+            if (available.has_value())
+            {
+                sensors[index].available = *available;
+            }
         }
     }
 
@@ -366,11 +378,12 @@ TEST(PollerInitTest, UnpopulatedSlotInitializesSensorsWithNaNDisabledAndNotFunct
     {
         EXPECT_TRUE(std::isnan(s.value)) << s.path;
         EXPECT_FALSE(s.functional) << s.path;
+        EXPECT_FALSE(s.available) << s.path;
         EXPECT_EQ(s.state, psu::sensors::operationalStateDisabled) << s.path;
     }
 
     // Start polling on an unpopulated slot where all reads fail/time out:
-    // values remain NaN, Functional=false, State=Disabled.
+    // values remain NaN, Functional=false, Available=false, State=Disabled.
     poller.start();
     EXPECT_FALSE(poller.isPresent());
     EXPECT_FALSE(poller.isFunctional());
@@ -378,6 +391,7 @@ TEST(PollerInitTest, UnpopulatedSlotInitializesSensorsWithNaNDisabledAndNotFunct
     {
         EXPECT_TRUE(std::isnan(s.value)) << s.path;
         EXPECT_FALSE(s.functional) << s.path;
+        EXPECT_FALSE(s.available) << s.path;
         EXPECT_EQ(s.state, psu::sensors::operationalStateDisabled) << s.path;
     }
 }
@@ -406,6 +420,7 @@ TEST(PollerInitTest, PopulatedSlotInitializesSensorsAndUpdatesLiveValuesOnStart)
     {
         EXPECT_DOUBLE_EQ(s.value, 0.0);
         EXPECT_TRUE(s.functional);
+        EXPECT_TRUE(s.available);
         EXPECT_EQ(s.state, psu::sensors::operationalStateEnabled);
     }
 

@@ -28,6 +28,8 @@ inline constexpr auto assetInterface =
 inline constexpr auto itemInterface = "xyz.openbmc_project.Inventory.Item";
 inline constexpr auto operationalStatusInterface =
     "xyz.openbmc_project.State.Decorator.OperationalStatus";
+inline constexpr auto availabilityInterface =
+    "xyz.openbmc_project.State.Decorator.Availability";
 inline constexpr auto associationInterface =
     "xyz.openbmc_project.Association.Definitions";
 
@@ -52,12 +54,13 @@ struct PsuAsset
 
 // One published PSU inventory object. A slot is present when its MFR read
 // yielded a usable manufacturer string; the registered-but-empty slot is
-// present=false / functional=false (spec §5.6).
+// present=false / available=false / functional=false (spec §5.6).
 struct PsuInventory
 {
     std::string name;
     bool present;
     bool functional;
+    bool available = false;
     std::string manufacturer;
     std::string model;
 
@@ -68,11 +71,13 @@ struct PsuInventory
 using Association = std::tuple<std::string, std::string, std::string>;
 
 // The interfaces of a published slot that later polls update (spec §5.7). The
-// item interface carries `Present`; the status interface `Functional`.
+// item interface carries `Present`; the status interface `Functional`; the
+// availability interface `Available`.
 struct PowerSupplyHandles
 {
     std::shared_ptr<sdbusplus::asio::dbus_interface> item;
     std::shared_ptr<sdbusplus::asio::dbus_interface> status;
+    std::shared_ptr<sdbusplus::asio::dbus_interface> availability;
 };
 
 // Published slot handles keyed by PSU name.
@@ -121,10 +126,10 @@ inline PsuInventory
 {
     if (asset)
     {
-        return {std::move(name), true, true, asset->manufacturer,
+        return {std::move(name), true, true, true, asset->manufacturer,
                 asset->model};
     }
-    return {std::move(name), false, false, {}, {}};
+    return {std::move(name), false, false, false, {}, {}};
 }
 
 // Asset interface properties for an inventory object.
@@ -225,8 +230,9 @@ void publishChassisAssociation(
     const std::vector<std::string>& psuPaths, std::string_view chassisPath,
     const std::vector<std::string>& sensorPaths = {});
 
-// Flip the Present/Functional pair on a published slot after startup.
+// Flip the Present/Functional/Available states on a published slot after startup.
 void setPresentAndFunctional(const PowerSupplyHandles& handles, bool present,
-                             bool functional);
+                             bool functional,
+                             std::optional<bool> available = std::nullopt);
 
 } // namespace psu::inventory
