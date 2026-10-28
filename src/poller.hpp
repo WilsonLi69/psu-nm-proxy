@@ -1,5 +1,7 @@
 #pragma once
 
+#include "dbus_adapters.hpp"
+#include "event_logger.hpp"
 #include "failure_tracker.hpp"
 #include "inventory.hpp"
 #include "inventory_sink.hpp"
@@ -224,6 +226,12 @@ class DbusSensorPublisher : public SensorPublisher
 class Poller
 {
   public:
+    inline static psu::event::NullEventLogger& getNullLogger()
+    {
+        static psu::event::NullEventLogger instance;
+        return instance;
+    }
+
     Poller(boost::asio::io_context& io, sdbusplus::asio::connection& conn,
            sdbusplus::asio::object_server& server, std::string psuName,
            std::uint8_t psuAddr8, std::chrono::milliseconds interval,
@@ -233,15 +241,19 @@ class Poller
            FunctionalSink onFunctionalChange = {},
            bool initiallyPresent = false,
            psu::discovery::NodeManagerClient* nmClient = nullptr,
-           psu::discovery::InventorySink* invSink = nullptr) :
+           psu::discovery::InventorySink* invSink = nullptr,
+           psu::event::EventLogger* eventLogger = nullptr) :
         ownedReader(std::make_unique<IpmbWordReader>(conn, psuAddr8)),
         ownedPublisher(std::make_unique<DbusSensorPublisher>(
             server, psu::inventory::powerSupplyPath(psuName))),
+        ownedLogger(eventLogger ? nullptr
+                                : std::make_unique<psu::discovery::DbusEventLogger>(conn)),
         psuName(std::move(psuName)), psuAddr8(psuAddr8), interval(interval),
         timer(io), sensorCount(sensorDefs.size()),
         presenceTracker(initiallyPresent),
         tracker(failuresBeforeNotFunctional),
         reader(*ownedReader), publisher(*ownedPublisher),
+        logger(eventLogger ? *eventLogger : *ownedLogger),
         cycle(reader, sensorDefs), thresholds(std::move(thresholds)),
         onFunctionalChange(std::move(onFunctionalChange)),
         lastPresent(initiallyPresent), lastFunctional(initiallyPresent),
@@ -263,12 +275,15 @@ class Poller
            bool initiallyPresent = false,
            std::uint8_t psuAddr8 = 0,
            psu::discovery::NodeManagerClient* nmClient = nullptr,
-           psu::discovery::InventorySink* invSink = nullptr) :
+           psu::discovery::InventorySink* invSink = nullptr,
+           psu::event::EventLogger* eventLogger = nullptr) :
         psuName(std::move(psuName)), psuAddr8(psuAddr8), interval(interval),
         timer(io), sensorCount(sensorDefs.size()),
         presenceTracker(initiallyPresent),
         tracker(failuresBeforeNotFunctional),
-        reader(reader), publisher(publisher), cycle(reader, sensorDefs),
+        reader(reader), publisher(publisher),
+        logger(eventLogger ? *eventLogger : getNullLogger()),
+        cycle(reader, sensorDefs),
         thresholds(std::move(thresholds)),
         onFunctionalChange(std::move(onFunctionalChange)),
         lastPresent(initiallyPresent), lastFunctional(initiallyPresent),
@@ -417,6 +432,7 @@ class Poller
                     publisher.updateStatus(i, false, false);
                 }
                 publishFailureTransition(false, false, false);
+                logger.logRemoved(psuName);
             }
             return;
         }
@@ -436,12 +452,24 @@ class Poller
 
             if (!tracker.functional())
             {
+                const bool transitioningToCommFault =
+                    (lastProfile != StateProfile::commFault);
                 lastProfile = StateProfile::commFault;
                 for (std::size_t i = 0; i < sensorCount; ++i)
                 {
                     publisher.updateStatus(i, false, false);
                 }
                 publishFailureTransition(true, false, false);
+
+                if (transitioningToCommFault)
+                {
+                    std::optional<std::uint8_t> cc = std::nullopt;
+                    if (result.outcome == ReadOutcome::nodeBusy)
+                    {
+                        cc = 0xC0;
+                    }
+                    logger.logCommsFailure(psuName, cc);
+                }
             }
             return;
         }
@@ -449,12 +477,17 @@ class Poller
         // result.outcome == ReadOutcome::success:
         tracker.recordSuccess();
 
-        const bool wasAbsent = (lastProfile == StateProfile::absent || !lastPresent);
+        const auto prevProfile = lastProfile;
+        const bool wasAbsent =
+            (prevProfile == StateProfile::absent || !lastPresent);
+        const bool wasCommFault = (prevProfile == StateProfile::commFault);
+        const bool wasHwFault = (prevProfile == StateProfile::hwFault);
         const bool hasFault =
             result.status.has_value() && result.status->hasCriticalFault();
 
-        lastProfile =
+        const auto targetProfile =
             hasFault ? StateProfile::hwFault : StateProfile::operational;
+        lastProfile = targetProfile;
         const bool functional = !hasFault;
         const bool available = true;
 
@@ -467,6 +500,42 @@ class Poller
         if (wasAbsent || presenceChange == PresenceChange::inserted)
         {
             refreshAssetOnInsert();
+            logger.logInserted(psuName);
+            if (targetProfile == StateProfile::hwFault)
+            {
+                logger.logHardwareFault(
+                    psuName,
+                    psu::pmbus::firstCriticalFaultName(*result.status),
+                    result.status->raw);
+            }
+        }
+        else if (wasCommFault)
+        {
+            logger.logRecovery(psuName);
+            if (targetProfile == StateProfile::hwFault)
+            {
+                logger.logHardwareFault(
+                    psuName,
+                    psu::pmbus::firstCriticalFaultName(*result.status),
+                    result.status->raw);
+            }
+        }
+        else if (wasHwFault)
+        {
+            if (targetProfile == StateProfile::operational)
+            {
+                logger.logRecovery(psuName);
+            }
+        }
+        else // wasOperational
+        {
+            if (targetProfile == StateProfile::hwFault)
+            {
+                logger.logHardwareFault(
+                    psuName,
+                    psu::pmbus::firstCriticalFaultName(*result.status),
+                    result.status->raw);
+            }
         }
     }
 
@@ -529,6 +598,7 @@ class Poller
 
     std::unique_ptr<IpmbWordReader> ownedReader;
     std::unique_ptr<DbusSensorPublisher> ownedPublisher;
+    std::unique_ptr<psu::event::EventLogger> ownedLogger;
     std::string psuName;
     std::uint8_t psuAddr8 = 0;
     std::chrono::milliseconds interval;
@@ -539,6 +609,7 @@ class Poller
     FailureTracker tracker;
     WordReader& reader;
     SensorPublisher& publisher;
+    psu::event::EventLogger& logger;
     PollCycle cycle;
     std::map<std::string, Thresholds> thresholds;
     FunctionalSink onFunctionalChange;

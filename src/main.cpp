@@ -81,13 +81,15 @@ int main(int argc, char* argv[])
         std::make_shared<psu::discovery::DbusObjectMapperClient>(*conn);
     auto invSink =
         std::make_shared<psu::discovery::DbusInventorySink>(*server);
+    auto eventLogger =
+        std::make_shared<psu::discovery::DbusEventLogger>(*conn);
 
     auto discovery = std::make_shared<psu::discovery::SlotDiscovery>(
         io, config, *nmClient, *mapperClient, *invSink);
 
     discovery->start(
         [&io, conn, server, config, pollInterval, pollers,
-         nmClient, mapperClient, invSink](
+         nmClient, mapperClient, invSink, eventLogger](
             psu::discovery::DiscoveryOutcome outcome) {
             if (outcome.status !=
                 psu::discovery::DiscoveryOutcome::Status::success)
@@ -103,7 +105,8 @@ int main(int argc, char* argv[])
                     io, *conn, *server, slot.name, slot.address8, pollInterval,
                     config.failuresBeforeNotFunctional, sensorDefs,
                     config.thresholds, slot.updateInventoryHealth,
-                    slot.present, nmClient.get(), invSink.get());
+                    slot.present, nmClient.get(), invSink.get(),
+                    eventLogger.get());
                 poller->start();
                 pollers->push_back(std::move(poller));
             }
