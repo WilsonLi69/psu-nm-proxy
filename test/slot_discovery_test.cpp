@@ -83,8 +83,10 @@ class FakeInventorySink : public psu::discovery::InventorySink
         std::map<std::string, HealthSink> result;
         for (const auto& item : inventory)
         {
-            result[item.name] = [this, name = item.name](bool present, bool functional) {
-                healthUpdates[name].emplace_back(present, functional);
+            result[item.name] = [this, name = item.name](
+                                    bool present, bool functional,
+                                    std::optional<bool> available = std::nullopt) {
+                healthUpdates[name].emplace_back(present, functional, available);
             };
         }
         return result;
@@ -99,11 +101,19 @@ class FakeInventorySink : public psu::discovery::InventorySink
         publishedSensorAssociations.push_back(sensorPaths);
     }
 
+    void updateAsset(const std::string& name,
+                     const psu::inventory::PsuAsset& asset) override
+    {
+        updatedAssets[name] = asset;
+    }
+
     std::vector<std::vector<psu::inventory::PsuInventory>> publishedInventory;
     std::vector<std::pair<std::vector<std::string>, std::string>>
         publishedChassisAssociations;
     std::vector<std::vector<std::string>> publishedSensorAssociations;
-    std::map<std::string, std::vector<std::pair<bool, bool>>> healthUpdates;
+    std::map<std::string, std::vector<std::tuple<bool, bool, std::optional<bool>>>>
+        healthUpdates;
+    std::map<std::string, psu::inventory::PsuAsset> updatedAssets;
 };
 
 std::vector<std::uint8_t> validCapabilities()
@@ -284,9 +294,12 @@ TEST(SlotDiscoveryTest, ResolvesSlotsReadsAssetsAndPublishesInventory)
     EXPECT_FALSE(outcome->slots[0].present);
     EXPECT_EQ(outcome->slots[1].name, "PSU2");
     EXPECT_EQ(outcome->slots[1].address8, 0xB2);
-    EXPECT_TRUE(outcome->slots[1].present);
+    EXPECT_FALSE(outcome->slots[1].present);
 
-    // Verify published inventory: 2 items (PSU1 absent, PSU2 present)
+    // Verify boot-time asset probe is superseded: discovery does not invoke readAsset synchronously
+    EXPECT_TRUE(nm.assetCalls.empty());
+
+    // Verify published inventory: all configured slots initialize under canonical STATE_ABSENT
     ASSERT_EQ(sink.publishedInventory.size(), 1U);
     const auto& inv = sink.publishedInventory[0];
     ASSERT_EQ(inv.size(), 2U);
@@ -295,19 +308,20 @@ TEST(SlotDiscoveryTest, ResolvesSlotsReadsAssetsAndPublishesInventory)
     EXPECT_FALSE(inv[0].available);
     EXPECT_FALSE(inv[0].functional);
     EXPECT_EQ(inv[1].name, "PSU2");
-    EXPECT_TRUE(inv[1].present);
-    EXPECT_TRUE(inv[1].available);
-    EXPECT_TRUE(inv[1].functional);
-    EXPECT_EQ(inv[1].manufacturer, "ACBEL");
+    EXPECT_FALSE(inv[1].present);
+    EXPECT_FALSE(inv[1].available);
+    EXPECT_FALSE(inv[1].functional);
 
-    // Verify health callback linkage for both unpopulated and populated slots
-    outcome->slots[0].updateInventoryHealth(true, true);
+    // Verify health callback linkage
+    outcome->slots[0].updateInventoryHealth(true, true, true);
     ASSERT_EQ(sink.healthUpdates["PSU1"].size(), 1U);
-    EXPECT_EQ(sink.healthUpdates["PSU1"][0], (std::pair<bool, bool>{true, true}));
+    EXPECT_EQ(sink.healthUpdates["PSU1"][0],
+              (std::tuple<bool, bool, std::optional<bool>>{true, true, true}));
 
-    outcome->slots[1].updateInventoryHealth(true, false);
+    outcome->slots[1].updateInventoryHealth(true, false, true);
     ASSERT_EQ(sink.healthUpdates["PSU2"].size(), 1U);
-    EXPECT_EQ(sink.healthUpdates["PSU2"][0], (std::pair<bool, bool>{true, false}));
+    EXPECT_EQ(sink.healthUpdates["PSU2"][0],
+              (std::tuple<bool, bool, std::optional<bool>>{true, false, true}));
 
     // Verify chassis association published (both PSU paths and all 20 sensor paths)
     ASSERT_EQ(sink.publishedChassisAssociations.size(), 1U);

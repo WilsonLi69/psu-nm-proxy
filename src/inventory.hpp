@@ -78,6 +78,7 @@ struct PowerSupplyHandles
     std::shared_ptr<sdbusplus::asio::dbus_interface> item;
     std::shared_ptr<sdbusplus::asio::dbus_interface> status;
     std::shared_ptr<sdbusplus::asio::dbus_interface> availability;
+    std::shared_ptr<sdbusplus::asio::dbus_interface> asset;
 };
 
 // Published slot handles keyed by PSU name.
@@ -234,5 +235,8 @@ void publishChassisAssociation(
 void setPresentAndFunctional(const PowerSupplyHandles& handles, bool present,
                              bool functional,
                              std::optional<bool> available = std::nullopt);
+
+// Update the Asset properties on a published slot after discovery / hot-insert.
+void setAsset(const PowerSupplyHandles& handles, const PsuAsset& asset);
 
 } // namespace psu::inventory

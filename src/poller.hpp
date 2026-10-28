@@ -2,10 +2,13 @@
 
 #include "failure_tracker.hpp"
 #include "inventory.hpp"
+#include "inventory_sink.hpp"
 #include "ipmb_reader.hpp"
+#include "node_manager_client.hpp"
 #include "operational_state.hpp"
 #include "pmbus.hpp"
 #include "poll_cycle.hpp"
+#include "presence_tracker.hpp"
 #include "sensor_set.hpp"
 
 #include <boost/asio/io_context.hpp>
@@ -14,11 +17,13 @@
 #include <sdbusplus/asio/object_server.hpp>
 
 #include <chrono>
+#include <cmath>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -226,19 +231,24 @@ class Poller
            std::vector<const SensorDef*> sensorDefs,
            std::map<std::string, Thresholds> thresholds = {},
            FunctionalSink onFunctionalChange = {},
-           bool initiallyPresent = true) :
+           bool initiallyPresent = false,
+           psu::discovery::NodeManagerClient* nmClient = nullptr,
+           psu::discovery::InventorySink* invSink = nullptr) :
         ownedReader(std::make_unique<IpmbWordReader>(conn, psuAddr8)),
         ownedPublisher(std::make_unique<DbusSensorPublisher>(
             server, psu::inventory::powerSupplyPath(psuName))),
-        psuName(std::move(psuName)), interval(interval), timer(io),
-        sensorCount(sensorDefs.size()), tracker(failuresBeforeNotFunctional),
+        psuName(std::move(psuName)), psuAddr8(psuAddr8), interval(interval),
+        timer(io), sensorCount(sensorDefs.size()),
+        presenceTracker(initiallyPresent),
+        tracker(failuresBeforeNotFunctional),
         reader(*ownedReader), publisher(*ownedPublisher),
         cycle(reader, sensorDefs), thresholds(std::move(thresholds)),
         onFunctionalChange(std::move(onFunctionalChange)),
         lastPresent(initiallyPresent), lastFunctional(initiallyPresent),
         lastAvailable(initiallyPresent),
         lastProfile(initiallyPresent ? StateProfile::operational
-                                     : StateProfile::absent)
+                                     : StateProfile::absent),
+        nmClient(nmClient), invSink(invSink)
     {
         addSensors(sensorDefs);
     }
@@ -250,34 +260,42 @@ class Poller
            std::vector<const SensorDef*> sensorDefs,
            std::map<std::string, Thresholds> thresholds = {},
            FunctionalSink onFunctionalChange = {},
-           bool initiallyPresent = true) :
-        psuName(std::move(psuName)), interval(interval), timer(io),
-        sensorCount(sensorDefs.size()), tracker(failuresBeforeNotFunctional),
+           bool initiallyPresent = false,
+           std::uint8_t psuAddr8 = 0,
+           psu::discovery::NodeManagerClient* nmClient = nullptr,
+           psu::discovery::InventorySink* invSink = nullptr) :
+        psuName(std::move(psuName)), psuAddr8(psuAddr8), interval(interval),
+        timer(io), sensorCount(sensorDefs.size()),
+        presenceTracker(initiallyPresent),
+        tracker(failuresBeforeNotFunctional),
         reader(reader), publisher(publisher), cycle(reader, sensorDefs),
         thresholds(std::move(thresholds)),
         onFunctionalChange(std::move(onFunctionalChange)),
         lastPresent(initiallyPresent), lastFunctional(initiallyPresent),
         lastAvailable(initiallyPresent),
         lastProfile(initiallyPresent ? StateProfile::operational
-                                     : StateProfile::absent)
+                                     : StateProfile::absent),
+        nmClient(nmClient), invSink(invSink)
     {
         addSensors(sensorDefs);
     }
 
     void setPresent(bool present)
     {
+        presenceTracker.setPresent(present);
         lastPresent = present;
         if (!present)
         {
             lastFunctional = false;
             lastAvailable = false;
             lastProfile = StateProfile::absent;
+            setAllSensorsNaN();
         }
     }
 
     bool isPresent() const
     {
-        return lastPresent;
+        return presenceTracker.isPresent();
     }
 
     bool isFunctional() const
@@ -309,29 +327,6 @@ class Poller
         });
     }
 
-  private:
-    static constexpr int defaultVoutExponent = -4;
-
-    void addSensors(const std::vector<const SensorDef*>& defs)
-    {
-        const auto init = initialSensorState(lastPresent);
-        for (std::size_t i = 0; i < defs.size(); ++i)
-        {
-            const auto* def = defs[i];
-            const std::string path = sensorPath(psuName, *def);
-
-            ThresholdProperties threshProps;
-            const auto it = thresholds.find(std::string(def->label));
-            if (it != thresholds.end())
-            {
-                threshProps = thresholdProperties(it->second);
-            }
-
-            publisher.publishSensor(i, path, *def, init.value, init.functional,
-                                    init.available, threshProps);
-        }
-    }
-
     void poll()
     {
         // Sensor values are published as each read succeeds (the onValue
@@ -355,33 +350,124 @@ class Poller
             });
     }
 
-    // Commit one completed cycle: advance the consecutive-failure tracker and
-    // update Present/Functional/Available across sensor and inventory objects (spec §5.7).
+  private:
+    static constexpr int defaultVoutExponent = -4;
+
+    void addSensors(const std::vector<const SensorDef*>& defs)
+    {
+        const auto init = initialSensorState(lastPresent);
+        for (std::size_t i = 0; i < defs.size(); ++i)
+        {
+            const auto* def = defs[i];
+            const std::string path = sensorPath(psuName, *def);
+
+            ThresholdProperties threshProps;
+            const auto it = thresholds.find(std::string(def->label));
+            if (it != thresholds.end())
+            {
+                threshProps = thresholdProperties(it->second);
+            }
+
+            publisher.publishSensor(i, path, *def, init.value, init.functional,
+                                    init.available, threshProps);
+        }
+    }
+
+    void setAllSensorsNaN()
+    {
+        const double nanVal = std::numeric_limits<double>::quiet_NaN();
+        for (std::size_t i = 0; i < sensorCount; ++i)
+        {
+            publisher.updateValue(i, nanVal);
+        }
+    }
+
+    void refreshAssetOnInsert()
+    {
+        if (nmClient && invSink)
+        {
+            nmClient->readAsset(
+                psuAddr8,
+                [this](std::optional<psu::inventory::PsuAsset> asset) {
+                    if (asset && invSink)
+                    {
+                        invSink->updateAsset(psuName, *asset);
+                    }
+                });
+        }
+    }
+
+    // Commit one completed cycle: advance the differentiated dynamic presence
+    // tracker (0x80) and consecutive-failure tracker (0xC0/transport stalls),
+    // updating Present/Functional/Available across sensor and inventory objects (spec §5.7).
     void applyCycle(const CycleResult& result)
     {
-        // A cycle is a failure when any D9h read failed; a clean cycle clears
-        // the consecutive-failure count (spec §5.7).
-        const bool cycleOk = result.readsSucceeded && result.status.has_value();
-        if (cycleOk)
+        const auto presenceChange = presenceTracker.record(result.outcome);
+
+        if (result.outcome == ReadOutcome::deviceTimeout)
         {
-            tracker.recordSuccess();
+            // SMLink device timeout (0x80) is exclusively tracked by PresenceTracker.
+            // It does not increment FailureTracker.
+            if (presenceChange == PresenceChange::removed)
+            {
+                lastProfile = StateProfile::absent;
+                setAllSensorsNaN();
+                for (std::size_t i = 0; i < sensorCount; ++i)
+                {
+                    publisher.updateStatus(i, false, false);
+                }
+                publishFailureTransition(false, false, false);
+            }
+            return;
         }
-        else
+
+        if (result.outcome == ReadOutcome::nodeBusy ||
+            result.outcome == ReadOutcome::transportError)
         {
+            // 0xC0 (Node Busy) and IPMB transport errors never modify Present;
+            // they only increment FailureTracker toward failuresBeforeNotFunctional.
             tracker.recordFailure();
+
+            if (!presenceTracker.isPresent())
+            {
+                lastProfile = StateProfile::absent;
+                return;
+            }
+
+            if (!tracker.functional())
+            {
+                lastProfile = StateProfile::commFault;
+                for (std::size_t i = 0; i < sensorCount; ++i)
+                {
+                    publisher.updateStatus(i, false, false);
+                }
+                publishFailureTransition(true, false, false);
+            }
+            return;
         }
 
-        const auto health =
-            slotHealth(lastPresent, tracker.functional(), result.status,
-                       result.readsSucceeded, lastProfile);
+        // result.outcome == ReadOutcome::success:
+        tracker.recordSuccess();
 
-        lastProfile = health.profile;
+        const bool wasAbsent = (lastProfile == StateProfile::absent || !lastPresent);
+        const bool hasFault =
+            result.status.has_value() && result.status->hasCriticalFault();
+
+        lastProfile =
+            hasFault ? StateProfile::hwFault : StateProfile::operational;
+        const bool functional = !hasFault;
+        const bool available = true;
 
         for (std::size_t i = 0; i < sensorCount; ++i)
         {
-            publisher.updateStatus(i, health.functional, health.available);
+            publisher.updateStatus(i, functional, available);
         }
-        publishFailureTransition(health.present, health.functional, health.available);
+        publishFailureTransition(true, functional, available);
+
+        if (wasAbsent || presenceChange == PresenceChange::inserted)
+        {
+            refreshAssetOnInsert();
+        }
     }
 
     // Emit transitions once per crossing and mirror the slot's
@@ -444,20 +530,24 @@ class Poller
     std::unique_ptr<IpmbWordReader> ownedReader;
     std::unique_ptr<DbusSensorPublisher> ownedPublisher;
     std::string psuName;
+    std::uint8_t psuAddr8 = 0;
     std::chrono::milliseconds interval;
     boost::asio::steady_timer timer;
     std::size_t sensorCount = 0;
     int voutExponent = defaultVoutExponent;
+    PresenceTracker presenceTracker;
     FailureTracker tracker;
     WordReader& reader;
     SensorPublisher& publisher;
     PollCycle cycle;
     std::map<std::string, Thresholds> thresholds;
     FunctionalSink onFunctionalChange;
-    bool lastPresent = true;
-    bool lastFunctional = true;
-    bool lastAvailable = true;
-    StateProfile lastProfile = StateProfile::operational;
+    bool lastPresent = false;
+    bool lastFunctional = false;
+    bool lastAvailable = false;
+    StateProfile lastProfile = StateProfile::absent;
+    psu::discovery::NodeManagerClient* nmClient = nullptr;
+    psu::discovery::InventorySink* invSink = nullptr;
 };
 
 } // namespace psu::sensors

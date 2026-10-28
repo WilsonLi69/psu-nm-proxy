@@ -1,5 +1,8 @@
 #include "nm_command.hpp"
 
+#include "ipmb_client.hpp"
+#include "pmbus_reader.hpp"
+
 #include <gtest/gtest.h>
 
 #include <array>
@@ -227,3 +230,71 @@ TEST(NmCommand, SetPsuConfigFallbackUsedOnlyWhenEnabledAndEmpty)
     ASSERT_TRUE(payload.has_value());
     EXPECT_EQ(*payload, psu::nm::encodeSetPsuConfig(0, addrs));
 }
+
+TEST(IpmbNormalizeCc, Normalizes0xA3WithEchoAndAsciiToSuccess)
+{
+    // 0x57, 0x01, 0x00 (Intel echo), length 5, "ACBEL"
+    const std::vector<std::uint8_t> response = {
+        0x57, 0x01, 0x00, 0x05, 'A', 'C', 'B', 'E', 'L',
+    };
+    EXPECT_EQ(psu::ipmb::normalizeCompletionCode(0xA3, response), 0x00);
+}
+
+TEST(IpmbNormalizeCc, Preserves0xA3WithoutEcho)
+{
+    const std::vector<std::uint8_t> response = {
+        0x00, 0x00, 0x00, 0x05, 'A', 'C', 'B', 'E', 'L',
+    };
+    EXPECT_EQ(psu::ipmb::normalizeCompletionCode(0xA3, response), 0xA3);
+}
+
+TEST(IpmbNormalizeCc, Preserves0xA3WithShortOrEmptyPayload)
+{
+    const std::vector<std::uint8_t> response = {0x57, 0x01, 0x00};
+    EXPECT_EQ(psu::ipmb::normalizeCompletionCode(0xA3, response), 0xA3);
+}
+
+TEST(IpmbNormalizeCc, Preserves0xA3WithNonAsciiPayload)
+{
+    // Length 1, byte 0x01 (non-printable control char)
+    const std::vector<std::uint8_t> response = {0x57, 0x01, 0x00, 0x01, 0x01};
+    EXPECT_EQ(psu::ipmb::normalizeCompletionCode(0xA3, response), 0xA3);
+}
+
+TEST(IpmbNormalizeCc, PreservesOtherCompletionCodes)
+{
+    const std::vector<std::uint8_t> response = {
+        0x57, 0x01, 0x00, 0x05, 'A', 'C', 'B', 'E', 'L',
+    };
+    EXPECT_EQ(psu::ipmb::normalizeCompletionCode(0x80, response), 0x80);
+    EXPECT_EQ(psu::ipmb::normalizeCompletionCode(0xC0, response), 0xC0);
+    EXPECT_EQ(psu::ipmb::normalizeCompletionCode(0x00, response), 0x00);
+}
+
+TEST(WordResult, EvaluatesCorrectly)
+{
+    using psu::sensors::ReadOutcome;
+    using psu::sensors::WordResult;
+
+    WordResult def;
+    EXPECT_FALSE(def);
+    EXPECT_FALSE(def.has_value());
+    EXPECT_EQ(def.outcome, ReadOutcome::transportError);
+
+    WordResult ok(0x1234);
+    EXPECT_TRUE(ok);
+    EXPECT_TRUE(ok.has_value());
+    EXPECT_EQ(*ok, 0x1234);
+    EXPECT_EQ(ok.outcome, ReadOutcome::success);
+
+    WordResult timeout(ReadOutcome::deviceTimeout);
+    EXPECT_FALSE(timeout);
+    EXPECT_FALSE(timeout.has_value());
+    EXPECT_EQ(timeout.outcome, ReadOutcome::deviceTimeout);
+
+    WordResult busy(ReadOutcome::nodeBusy);
+    EXPECT_FALSE(busy);
+    EXPECT_FALSE(busy.has_value());
+    EXPECT_EQ(busy.outcome, ReadOutcome::nodeBusy);
+}
+

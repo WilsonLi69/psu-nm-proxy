@@ -22,7 +22,8 @@ struct DiscoveredSlot
 {
     std::string name;
     std::uint8_t address8;
-    std::function<void(bool present, bool functional)> updateInventoryHealth;
+    std::function<void(bool present, bool functional,
+                       std::optional<bool> available)> updateInventoryHealth;
     bool present = false;
 };
 
@@ -58,8 +59,6 @@ class SlotDiscovery : public std::enable_shared_from_this<SlotDiscovery>
     void readPsuConfig();
     void onPsuConfigRead(NodeManagerClient::Response psuConfig);
     void onPsuConfigResolved(const std::vector<std::uint8_t>& psuConfig);
-    void readSlotAsset(std::size_t index, const std::string& name,
-                       std::uint8_t address8);
     void finishDiscovery();
     void attachChassisAssociation(std::vector<std::string> psuPaths,
                                   std::vector<std::string> sensorPaths);
@@ -74,7 +73,6 @@ class SlotDiscovery : public std::enable_shared_from_this<SlotDiscovery>
 
     std::vector<psu::inventory::PsuInventory> inventory;
     std::vector<std::pair<std::string, std::uint8_t>> activeSlots;
-    std::size_t assetsPending = 0;
 };
 
 } // namespace psu::discovery

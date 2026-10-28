@@ -10,6 +10,7 @@ test_exe = executable(
     'poll_cycle_test.cpp',
     'failure_tracker_test.cpp',
     'operational_state_test.cpp',
+    'presence_tracker_test.cpp',
     'config_test.cpp',
     'threshold_test.cpp',
     'slot_discovery_test.cpp',

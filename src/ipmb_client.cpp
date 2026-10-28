@@ -1,6 +1,8 @@
 #include "ipmb_client.hpp"
 
+#include "inventory.hpp"
 #include "nm_command.hpp"
+#include "pmbus.hpp"
 
 #include <boost/asio/post.hpp>
 
@@ -33,9 +35,11 @@ void sendCommandImpl(sdbusplus::asio::connection& conn, std::uint8_t cmd,
             Response result;
             if (!ec)
             {
-                const auto& [status, rsNetFn, rsLun, rsCmd, completionCode,
+                const auto& [status, rsNetFn, rsLun, rsCmd, rawCc,
                              response] = replyFields;
-                if (status == 0 && (tolerateCc || completionCode == 0x00))
+                const auto completionCode =
+                    normalizeCompletionCode(rawCc, response);
+                if (status == 0 && (tolerateCc || completionCode == ccSuccess))
                 {
                     try
                     {
@@ -65,6 +69,31 @@ void sendCommandImpl(sdbusplus::asio::connection& conn, std::uint8_t cmd,
 
 } // namespace
 
+std::uint8_t normalizeCompletionCode(std::uint8_t completionCode,
+                                     const std::vector<std::uint8_t>& response)
+{
+    if (completionCode == ccReadLengthDifferent)
+    {
+        if (psu::nm::hasIntelEcho(response))
+        {
+            try
+            {
+                const auto stripped = psu::nm::stripIntelEcho(response);
+                const auto str = psu::pmbus::decodeAscii(stripped);
+                if (psu::inventory::usableAssetString(str))
+                {
+                    return ccSuccess;
+                }
+            }
+            catch (const std::exception&)
+            {
+                // Not a valid length-prefixed ASCII block
+            }
+        }
+    }
+    return completionCode;
+}
+
 void sendCommandAsync(sdbusplus::asio::connection& conn, std::uint8_t cmd,
                       const std::vector<std::uint8_t>& data,
                       ResponseCallback callback)
@@ -77,6 +106,48 @@ void sendCommandToleratingCompletionCodeAsync(
     const std::vector<std::uint8_t>& data, ResponseCallback callback)
 {
     sendCommandImpl(conn, cmd, data, true, std::move(callback));
+}
+
+void sendRawPmbusAsync(sdbusplus::asio::connection& conn,
+                       const std::vector<std::uint8_t>& payload,
+                       RawPmbusCallback callback)
+{
+    conn.async_method_call_timed(
+        [&conn, callback = std::move(callback)](
+            const boost::system::error_code& ec, const IpmbReply& replyFields) {
+            RawPmbusOutcome outcome;
+            if (!ec)
+            {
+                const auto& [status, rsNetFn, rsLun, rsCmd, rawCc,
+                             response] = replyFields;
+                if (status == 0)
+                {
+                    outcome.transportOk = true;
+                    outcome.completionCode =
+                        normalizeCompletionCode(rawCc, response);
+                    if (outcome.completionCode == ccSuccess)
+                    {
+                        try
+                        {
+                            outcome.payload = psu::nm::stripIntelEcho(response);
+                        }
+                        catch (const std::exception&)
+                        {
+                            outcome.payload = std::nullopt;
+                        }
+                    }
+                }
+            }
+
+            boost::asio::post(
+                conn.get_io_context(),
+                [callback = std::move(callback),
+                 outcome = std::move(outcome)]() mutable {
+                    callback(std::move(outcome));
+                });
+        },
+        service, path, interface, "sendRequest", callTimeoutUs, channel,
+        psu::nm::netFn, lun, psu::nm::sendRawPmbusCmd, payload);
 }
 
 void sendRawPmbusAsync(sdbusplus::asio::connection& conn,

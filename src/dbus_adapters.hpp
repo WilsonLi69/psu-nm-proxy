@@ -86,13 +86,14 @@ class DbusInventorySink : public InventorySink
     std::map<std::string, HealthSink> publishInventory(
         const std::vector<psu::inventory::PsuInventory>& inventory) override
     {
-        const auto handles = psu::inventory::publish(server, inventory);
+        handles = psu::inventory::publish(server, inventory);
         std::map<std::string, HealthSink> result;
         for (const auto& [name, handle] : handles)
         {
-            result[name] = [handle](bool present, bool functional) {
+            result[name] = [handle](bool present, bool functional,
+                                    std::optional<bool> available) {
                 psu::inventory::setPresentAndFunctional(handle, present,
-                                                        functional);
+                                                        functional, available);
             };
         }
         return result;
@@ -106,8 +107,19 @@ class DbusInventorySink : public InventorySink
                                                   chassisPath, sensorPaths);
     }
 
+    void updateAsset(const std::string& name,
+                     const psu::inventory::PsuAsset& asset) override
+    {
+        auto it = handles.find(name);
+        if (it != handles.end())
+        {
+            psu::inventory::setAsset(it->second, asset);
+        }
+    }
+
   private:
     sdbusplus::asio::object_server& server;
+    psu::inventory::PowerSupplyHandleMap handles;
 };
 
 } // namespace psu::discovery

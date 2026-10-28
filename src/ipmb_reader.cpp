@@ -6,7 +6,6 @@
 #include <cstdint>
 #include <exception>
 #include <functional>
-#include <optional>
 #include <utility>
 #include <vector>
 
@@ -24,20 +23,42 @@ void IpmbWordReader::read(std::uint8_t command,
     const auto payload = psu::nm::encodeReadWord(psuAddr8, command);
     psu::ipmb::sendRawPmbusAsync(
         conn, payload,
-        [callback = std::move(callback)](psu::ipmb::Response response) {
-            WordResult word;
-            if (response)
+        [callback = std::move(callback)](psu::ipmb::RawPmbusOutcome outcome) {
+            if (!outcome.transportOk)
             {
-                try
-                {
-                    word = psu::nm::wordFromLittleEndian(*response);
-                }
-                catch (const std::exception&)
-                {
-                    word = std::nullopt;
-                }
+                callback(WordResult(ReadOutcome::transportError));
+                return;
             }
-            callback(word);
+
+            if (outcome.completionCode == psu::ipmb::ccDeviceTimeout)
+            {
+                callback(WordResult(ReadOutcome::deviceTimeout));
+                return;
+            }
+
+            if (outcome.completionCode == psu::ipmb::ccNodeBusy)
+            {
+                callback(WordResult(ReadOutcome::nodeBusy));
+                return;
+            }
+
+            if (outcome.completionCode != psu::ipmb::ccSuccess ||
+                !outcome.payload)
+            {
+                callback(WordResult(ReadOutcome::transportError));
+                return;
+            }
+
+            try
+            {
+                const auto word =
+                    psu::nm::wordFromLittleEndian(*outcome.payload);
+                callback(WordResult(ReadOutcome::success, word));
+            }
+            catch (const std::exception&)
+            {
+                callback(WordResult(ReadOutcome::transportError));
+            }
         });
 }
 

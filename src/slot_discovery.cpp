@@ -142,41 +142,7 @@ void SlotDiscovery::onPsuConfigResolved(
         }
     }
 
-    assetsPending = activeSlots.size();
-    if (assetsPending == 0)
-    {
-        finishDiscovery();
-        return;
-    }
-
-    for (std::size_t i = 0; i < resolved.size(); ++i)
-    {
-        const auto& slot = resolved[i];
-        if (slot.address8)
-        {
-            readSlotAsset(i, slot.name, *slot.address8);
-        }
-    }
-}
-
-void SlotDiscovery::readSlotAsset(std::size_t index, const std::string& name,
-                                  std::uint8_t address8)
-{
-    nmClient.readAsset(
-        address8,
-        [self = shared_from_this(), index, name](
-            std::optional<psu::inventory::PsuAsset> asset) {
-            if (asset)
-            {
-                self->inventory[index] =
-                    psu::inventory::makeInventory(name, asset);
-            }
-
-            if (--self->assetsPending == 0)
-            {
-                self->finishDiscovery();
-            }
-        });
+    finishDiscovery();
 }
 
 void SlotDiscovery::finishDiscovery()
@@ -208,22 +174,14 @@ void SlotDiscovery::finishDiscovery()
         for (const auto& [name, address8] : activeSlots)
         {
             auto it = healthMap.find(name);
-            InventorySink::HealthSink updater = [](bool, bool) {};
+            InventorySink::HealthSink updater =
+                [](bool, bool, std::optional<bool>) {};
             if (it != healthMap.end())
             {
                 updater = it->second;
             }
-            bool present = false;
-            for (const auto& psu : inventory)
-            {
-                if (psu.name == name)
-                {
-                    present = psu.present;
-                    break;
-                }
-            }
             readySlots.push_back(
-                DiscoveredSlot{name, address8, std::move(updater), present});
+                DiscoveredSlot{name, address8, std::move(updater), /*present=*/false});
         }
 
         if (callback)

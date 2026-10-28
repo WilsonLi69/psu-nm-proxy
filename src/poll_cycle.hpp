@@ -18,6 +18,8 @@ namespace psu::sensors
 // The decoded outcome of one asynchronous read cycle for a single slot.
 struct CycleResult
 {
+    // Typed outcome of the STATUS_WORD read (or cycle outcome).
+    ReadOutcome outcome = ReadOutcome::success;
     // One decoded value per sensor, std::nullopt where that read failed.
     std::vector<std::optional<double>> values;
     // Decoded STATUS_WORD, or std::nullopt when that read failed.
@@ -26,13 +28,13 @@ struct CycleResult
     bool readsSucceeded = true;
 };
 
-// Drives one full read cycle asynchronously: each selected sensor's word read
-// in turn, then STATUS_WORD, decoding as results arrive.
+// Drives one full read cycle asynchronously: STATUS_WORD (0x79) is read first.
+// If 0x80 (DeviceTimeout) or 0xC0 (NodeBusy) is returned, the remaining telemetry
+// reads for that cycle are short-circuited (spec §5.3). Otherwise, each selected
+// sensor is read in turn.
 //
 // It never blocks: run() returns immediately and the completion callback fires
-// on the io_context thread once the whole cycle has finished. A failed read
-// records std::nullopt and does not stop the cycle, so one slow or absent
-// sensor never stalls the others or the D-Bus service.
+// on the io_context thread once the whole cycle has finished.
 //
 // One cycle at a time: run() must not be called again until `done` has fired.
 class PollCycle
@@ -50,15 +52,62 @@ class PollCycle
         this->done = std::move(done);
         result = CycleResult{};
         result.values.assign(sensorDefs.size(), std::nullopt);
-        readSensor(0);
+        readStatusWord();
     }
 
   private:
+    void readStatusWord()
+    {
+        reader.read(statusWordCommand, [this](WordResult word) {
+            result.outcome = word.outcome;
+
+            // Short-circuit remaining telemetry reads on SMLink device timeout (0x80)
+            // or ME node busy (0xC0).
+            if (word.outcome == ReadOutcome::deviceTimeout ||
+                word.outcome == ReadOutcome::nodeBusy)
+            {
+                result.readsSucceeded = false;
+                auto done = std::move(this->done);
+                done(std::move(result));
+                return;
+            }
+
+            if (word.outcome != ReadOutcome::success || !word.has_value())
+            {
+                result.readsSucceeded = false;
+                if (result.outcome == ReadOutcome::success)
+                {
+                    result.outcome = ReadOutcome::transportError;
+                }
+                auto done = std::move(this->done);
+                done(std::move(result));
+                return;
+            }
+
+            try
+            {
+                result.status = pmbus::decodeStatusWord(*word);
+            }
+            catch (const std::exception&)
+            {
+                result.readsSucceeded = false;
+                result.outcome = ReadOutcome::transportError;
+                auto done = std::move(this->done);
+                done(std::move(result));
+                return;
+            }
+
+            // STATUS_WORD read succeeded; read configured sensors.
+            readSensor(0);
+        });
+    }
+
     void readSensor(std::size_t index)
     {
         if (index == sensorDefs.size())
         {
-            readStatus();
+            auto done = std::move(this->done);
+            done(std::move(result));
             return;
         }
 
@@ -74,9 +123,6 @@ class PollCycle
                 {
                     const double value = decode(*def, *word);
                     result.values[index] = value;
-                    // Publish each value as soon as its read succeeds, rather
-                    // than holding it until the whole cycle (including the
-                    // slower STATUS_WORD) completes.
                     if (onValue)
                     {
                         onValue(index, value);
@@ -88,18 +134,6 @@ class PollCycle
                 }
             }
             readSensor(index + 1);
-        });
-    }
-
-    void readStatus()
-    {
-        reader.read(statusWordCommand, [this](WordResult word) {
-            if (word)
-            {
-                result.status = pmbus::decodeStatusWord(*word);
-            }
-            auto done = std::move(this->done);
-            done(std::move(result));
         });
     }
 

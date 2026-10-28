@@ -103,7 +103,7 @@ int main(int argc, char* argv[])
                     io, *conn, *server, slot.name, slot.address8, pollInterval,
                     config.failuresBeforeNotFunctional, sensorDefs,
                     config.thresholds, slot.updateInventoryHealth,
-                    slot.present);
+                    slot.present, nmClient.get(), invSink.get());
                 poller->start();
                 pollers->push_back(std::move(poller));
             }

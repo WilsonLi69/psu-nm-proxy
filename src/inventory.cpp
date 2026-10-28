@@ -139,7 +139,7 @@ PowerSupplyHandleMap publish(sdbusplus::asio::object_server& server,
 
         handles.emplace(psu.name,
                         PowerSupplyHandles{std::move(item), std::move(status),
-                                           std::move(avail)});
+                                           std::move(avail), std::move(asset)});
     }
 
     return handles;
@@ -178,6 +178,15 @@ void setPresentAndFunctional(const PowerSupplyHandles& handles, bool present,
     {
         const bool isAvail = available.value_or(present && functional);
         handles.availability->set_property("Available", isAvail);
+    }
+}
+
+void setAsset(const PowerSupplyHandles& handles, const PsuAsset& asset)
+{
+    if (handles.asset)
+    {
+        handles.asset->set_property("Manufacturer", asset.manufacturer);
+        handles.asset->set_property("Model", asset.model);
     }
 }
 
