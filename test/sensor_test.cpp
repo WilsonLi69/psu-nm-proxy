@@ -134,22 +134,20 @@ TEST(SensorSet, UnknownLabelIsNotFound)
     EXPECT_EQ(psu::sensors::findSensor("nope"), nullptr);
 }
 
-TEST(SensorInitialState, PopulatedSlotInitializesWithZeroFunctionalAndEnabled)
+TEST(SensorInitialState, PopulatedSlotInitializesWithZeroFunctionalAndAvailable)
 {
     const auto state = psu::sensors::initialSensorState(true);
 
     EXPECT_DOUBLE_EQ(state.value, 0.0);
     EXPECT_TRUE(state.functional);
     EXPECT_TRUE(state.available);
-    EXPECT_EQ(state.state, "xyz.openbmc_project.State.Decorator.OperationalStatus.State.Enabled");
 }
 
-TEST(SensorInitialState, UnpopulatedSlotInitializesWithNaNNotFunctionalAndDisabled)
+TEST(SensorInitialState, UnpopulatedSlotInitializesWithNaNNotFunctionalAndUnavailable)
 {
     const auto state = psu::sensors::initialSensorState(false);
 
     EXPECT_TRUE(std::isnan(state.value));
     EXPECT_FALSE(state.functional);
     EXPECT_FALSE(state.available);
-    EXPECT_EQ(state.state, "xyz.openbmc_project.State.Decorator.OperationalStatus.State.Disabled");
 }

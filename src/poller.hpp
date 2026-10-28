@@ -14,6 +14,7 @@
 #include <sdbusplus/asio/object_server.hpp>
 
 #include <chrono>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -34,11 +35,57 @@ inline constexpr auto operationalStatusInterface =
 inline constexpr auto availabilityInterface =
     "xyz.openbmc_project.State.Decorator.Availability";
 
-// Called whenever a slot's Present/Functional pair changes (spec §5.7):
-// Present is decoupled from transient communication failures and restored on
-// a clean read cycle, while Functional degrades on consecutive failures or
-// power faults and is restored on successful read.
-using FunctionalSink = std::function<void(bool present, bool functional)>;
+// Called whenever a slot's Present/Functional/Available health changes (spec §5.7).
+// Supports both 2-argument (present, functional) and 3-argument
+// (present, functional, available) callbacks for backward and forward compatibility.
+class FunctionalSink
+{
+  public:
+    FunctionalSink() = default;
+
+    FunctionalSink(std::function<void(bool, bool, std::optional<bool>)> f) :
+        fn3(std::move(f))
+    {}
+
+    FunctionalSink(std::function<void(bool, bool)> f) :
+        fn2(std::move(f))
+    {}
+
+    template <typename Callable>
+        requires std::invocable<Callable, bool, bool, std::optional<bool>>
+    FunctionalSink(Callable&& c) :
+        fn3(std::forward<Callable>(c))
+    {}
+
+    template <typename Callable>
+        requires std::invocable<Callable, bool, bool> &&
+                 (!std::invocable<Callable, bool, bool, std::optional<bool>>)
+    FunctionalSink(Callable&& c) :
+        fn2(std::forward<Callable>(c))
+    {}
+
+    void operator()(bool present, bool functional,
+                    std::optional<bool> available = std::nullopt) const
+    {
+        if (fn3)
+        {
+            fn3(present, functional, available);
+        }
+        else if (fn2)
+        {
+            fn2(present, functional);
+        }
+    }
+
+    explicit operator bool() const noexcept
+    {
+        return static_cast<bool>(fn3) || static_cast<bool>(fn2);
+    }
+
+  private:
+    std::function<void(bool, bool, std::optional<bool>)> fn3;
+    std::function<void(bool, bool)> fn2;
+};
 
 // Abstract sink for publishing and updating per-slot D-Bus sensor objects
 // (Sensor.Value, Availability, OperationalStatus, and Thresholds). Allows Poller
@@ -51,14 +98,12 @@ class SensorPublisher
     virtual void publishSensor(std::size_t index, const std::string& path,
                                const SensorDef& def, double initialValue,
                                bool initialFunctional, bool initialAvailable,
-                               std::string_view initialState,
                                const ThresholdProperties& thresholds) = 0;
 
     virtual void updateValue(std::size_t index, double value) = 0;
 
     virtual void updateStatus(std::size_t index, bool functional,
-                              std::string_view state,
-                              std::optional<bool> available = std::nullopt) = 0;
+                              bool available) = 0;
 };
 
 class DbusSensorPublisher : public SensorPublisher
@@ -72,7 +117,6 @@ class DbusSensorPublisher : public SensorPublisher
     void publishSensor(std::size_t index, const std::string& path,
                        const SensorDef& def, double initialValue,
                        bool initialFunctional, bool initialAvailable,
-                       std::string_view initialState,
                        const ThresholdProperties& thresholds) override
     {
         if (index >= sensors.size())
@@ -91,7 +135,6 @@ class DbusSensorPublisher : public SensorPublisher
 
         auto status = server.add_interface(path, operationalStatusInterface);
         status->register_property("Functional", initialFunctional);
-        status->register_property("State", std::string(initialState));
         status->initialize();
 
         if (!inventoryPath.empty())
@@ -106,9 +149,9 @@ class DbusSensorPublisher : public SensorPublisher
         }
 
         addThresholdInterface(path, warningThresholdInterface,
-                              thresholds.warning);
+                               thresholds.warning);
         addThresholdInterface(path, criticalThresholdInterface,
-                              thresholds.critical);
+                               thresholds.critical);
 
         sensors[index] = Published{std::move(value), std::move(status),
                                    std::move(avail)};
@@ -123,19 +166,17 @@ class DbusSensorPublisher : public SensorPublisher
     }
 
     void updateStatus(std::size_t index, bool functional,
-                      std::string_view state,
-                      std::optional<bool> available = std::nullopt) override
+                      bool available) override
     {
         if (index < sensors.size())
         {
             if (sensors[index].status)
             {
                 sensors[index].status->set_property("Functional", functional);
-                sensors[index].status->set_property("State", std::string(state));
             }
-            if (sensors[index].availability && available.has_value())
+            if (sensors[index].availability)
             {
-                sensors[index].availability->set_property("Available", *available);
+                sensors[index].availability->set_property("Available", available);
             }
         }
     }
@@ -194,7 +235,10 @@ class Poller
         reader(*ownedReader), publisher(*ownedPublisher),
         cycle(reader, sensorDefs), thresholds(std::move(thresholds)),
         onFunctionalChange(std::move(onFunctionalChange)),
-        lastPresent(initiallyPresent), lastFunctional(initiallyPresent)
+        lastPresent(initiallyPresent), lastFunctional(initiallyPresent),
+        lastAvailable(initiallyPresent),
+        lastProfile(initiallyPresent ? StateProfile::operational
+                                     : StateProfile::absent)
     {
         addSensors(sensorDefs);
     }
@@ -212,7 +256,10 @@ class Poller
         reader(reader), publisher(publisher), cycle(reader, sensorDefs),
         thresholds(std::move(thresholds)),
         onFunctionalChange(std::move(onFunctionalChange)),
-        lastPresent(initiallyPresent), lastFunctional(initiallyPresent)
+        lastPresent(initiallyPresent), lastFunctional(initiallyPresent),
+        lastAvailable(initiallyPresent),
+        lastProfile(initiallyPresent ? StateProfile::operational
+                                     : StateProfile::absent)
     {
         addSensors(sensorDefs);
     }
@@ -223,6 +270,8 @@ class Poller
         if (!present)
         {
             lastFunctional = false;
+            lastAvailable = false;
+            lastProfile = StateProfile::absent;
         }
     }
 
@@ -234,6 +283,16 @@ class Poller
     bool isFunctional() const
     {
         return lastFunctional;
+    }
+
+    bool isAvailable() const
+    {
+        return lastAvailable;
+    }
+
+    StateProfile getProfile() const
+    {
+        return lastProfile;
     }
 
     void start()
@@ -269,7 +328,7 @@ class Poller
             }
 
             publisher.publishSensor(i, path, *def, init.value, init.functional,
-                                    init.available, init.state, threshProps);
+                                    init.available, threshProps);
         }
     }
 
@@ -297,8 +356,7 @@ class Poller
     }
 
     // Commit one completed cycle: advance the consecutive-failure tracker and
-    // flip Present/Functional (spec §5.7). Values were already published as
-    // their reads completed.
+    // update Present/Functional/Available across sensor and inventory objects (spec §5.7).
     void applyCycle(const CycleResult& result)
     {
         // A cycle is a failure when any D9h read failed; a clean cycle clears
@@ -315,30 +373,35 @@ class Poller
 
         const auto health =
             slotHealth(lastPresent, tracker.functional(), result.status,
-                       result.readsSucceeded);
+                       result.readsSucceeded, lastProfile);
+
+        lastProfile = health.profile;
+
         for (std::size_t i = 0; i < sensorCount; ++i)
         {
-            publisher.updateStatus(i, health.functional, health.state);
+            publisher.updateStatus(i, health.functional, health.available);
         }
-        publishFailureTransition(health.present, health.functional);
+        publishFailureTransition(health.present, health.functional, health.available);
     }
 
     // Emit transitions once per crossing and mirror the slot's
-    // Present/Functional pair onto inventory (spec §5.7).
-    void publishFailureTransition(bool present, bool functional)
+    // Present/Functional/Available states onto inventory (spec §5.7).
+    void publishFailureTransition(bool present, bool functional, bool available)
     {
         const bool presenceChanged = (present != lastPresent);
         const bool functionalChanged = (functional != lastFunctional);
-        if (!presenceChanged && !functionalChanged)
+        const bool availableChanged = (available != lastAvailable);
+        if (!presenceChanged && !functionalChanged && !availableChanged)
         {
             return;
         }
         lastPresent = present;
         lastFunctional = functional;
+        lastAvailable = available;
 
         if (onFunctionalChange)
         {
-            onFunctionalChange(present, functional);
+            onFunctionalChange(present, functional, available);
         }
 
         if (presenceChanged)
@@ -353,23 +416,27 @@ class Poller
             }
         }
 
-        if (functionalChanged)
+        if (functionalChanged || availableChanged)
         {
-            if (functional)
+            if (functional && available)
             {
-                std::cerr << psuName << ": functional again\n";
+                std::cerr << psuName << ": operational again\n";
             }
-            else
+            else if (!available && !functional)
             {
                 if (!tracker.functional())
                 {
-                    std::cerr << psuName << ": not functional after "
+                    std::cerr << psuName << ": communication fault after "
                               << tracker.threshold() << " consecutive failures\n";
                 }
                 else
                 {
-                    std::cerr << psuName << ": not functional\n";
+                    std::cerr << psuName << ": not available/functional\n";
                 }
+            }
+            else if (available && !functional)
+            {
+                std::cerr << psuName << ": hardware fault\n";
             }
         }
     }
@@ -389,6 +456,8 @@ class Poller
     FunctionalSink onFunctionalChange;
     bool lastPresent = true;
     bool lastFunctional = true;
+    bool lastAvailable = true;
+    StateProfile lastProfile = StateProfile::operational;
 };
 
 } // namespace psu::sensors

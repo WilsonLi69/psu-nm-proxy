@@ -73,24 +73,131 @@ inline std::string decodeAscii(const std::vector<std::uint8_t>& bytes)
     return {bytes.begin() + 1, bytes.begin() + 1 + length};
 }
 
-// Decoded STATUS_WORD (0x79) operational bits.
+// Critical PMBus STATUS_WORD hardware fault mask (spec §5.5/§5.7, ADR-0003):
+// [2] TEMPERATURE_FAULT, [8] VOUT_OV_FAULT, [9] IOUT_OC_FAULT, [10] FAN_FAULT,
+// [13] VIN_UV_FAULT.
+inline constexpr std::uint16_t statusWordCriticalFaultMask = 0x2704;
+
+inline constexpr std::uint16_t statusWordCmlBit = 1;
+inline constexpr std::uint16_t statusWordTemperatureFaultBit = 2;
+inline constexpr std::uint16_t statusWordOffBit = 6;
+inline constexpr std::uint16_t statusWordVoutOvFaultBit = 8;
+inline constexpr std::uint16_t statusWordIoutOcFaultBit = 9;
+inline constexpr std::uint16_t statusWordFanFaultBit = 10;
+inline constexpr std::uint16_t statusWordPowerGoodBit = 11;
+inline constexpr std::uint16_t statusWordVinUvFaultBit = 13;
+
+// Decoded STATUS_WORD (0x79) operational and critical fault bits.
 struct StatusWord
 {
+    std::uint16_t raw;
     bool off;
     bool powerGood;
+    bool temperatureFault;
+    bool voutOvFault;
+    bool ioutOcFault;
+    bool fanFault;
+    bool vinUvFault;
+
+    StatusWord() :
+        raw(0), off(false), powerGood(false), temperatureFault(false),
+        voutOvFault(false), ioutOcFault(false), fanFault(false),
+        vinUvFault(false)
+    {}
+
+    StatusWord(bool off, bool powerGood) :
+        raw(static_cast<std::uint16_t>(
+            (off ? (1 << statusWordOffBit) : 0) |
+            (powerGood ? 0 : (1 << statusWordPowerGoodBit)))),
+        off(off), powerGood(powerGood), temperatureFault(false),
+        voutOvFault(false), ioutOcFault(false), fanFault(false),
+        vinUvFault(false)
+    {}
+
+    StatusWord(std::uint16_t raw, bool off, bool powerGood,
+               bool temperatureFault, bool voutOvFault, bool ioutOcFault,
+               bool fanFault, bool vinUvFault) :
+        raw(raw),
+        off(off), powerGood(powerGood), temperatureFault(temperatureFault),
+        voutOvFault(voutOvFault), ioutOcFault(ioutOcFault), fanFault(fanFault),
+        vinUvFault(vinUvFault)
+    {}
+
+    bool hasCriticalFault() const
+    {
+        return (raw & statusWordCriticalFaultMask) != 0;
+    }
+
+    bool operator==(const StatusWord&) const = default;
 };
 
-// STATUS_WORD bit field: [6] OFF (output disabled) and [11] POWER_GOOD#
-// (active-low: 0 indicates asserted/good, 1 indicates negated/not good).
+// STATUS_WORD bit field: [6] OFF (output disabled), [11] POWER_GOOD#
+// (active-low: 0 indicates asserted/good, 1 indicates negated/not good),
+// and the 5 critical hardware fault bits in mask 0x2704:
+// [2] TEMPERATURE_FAULT, [8] VOUT_OV_FAULT, [9] IOUT_OC_FAULT, [10] FAN_FAULT,
+// [13] VIN_UV_FAULT.
 inline StatusWord decodeStatusWord(std::uint16_t word)
 {
-    constexpr std::uint16_t offBit = 6;
-    constexpr std::uint16_t powerGoodBit = 11;
-
     return {
-        ((word >> offBit) & 0x1) != 0,
-        ((word >> powerGoodBit) & 0x1) == 0,
+        word,
+        ((word >> statusWordOffBit) & 0x1) != 0,
+        ((word >> statusWordPowerGoodBit) & 0x1) == 0,
+        ((word >> statusWordTemperatureFaultBit) & 0x1) != 0,
+        ((word >> statusWordVoutOvFaultBit) & 0x1) != 0,
+        ((word >> statusWordIoutOcFaultBit) & 0x1) != 0,
+        ((word >> statusWordFanFaultBit) & 0x1) != 0,
+        ((word >> statusWordVinUvFaultBit) & 0x1) != 0,
     };
+}
+
+inline bool hasCriticalFault(std::uint16_t word)
+{
+    return (word & statusWordCriticalFaultMask) != 0;
+}
+
+inline bool hasCriticalFault(const StatusWord& status)
+{
+    return status.hasCriticalFault();
+}
+
+inline std::string_view criticalFaultName(const StatusWord& status)
+{
+    if (status.temperatureFault)
+    {
+        return "TEMPERATURE_FAULT";
+    }
+    if (status.voutOvFault)
+    {
+        return "VOUT_OV_FAULT";
+    }
+    if (status.ioutOcFault)
+    {
+        return "IOUT_OC_FAULT";
+    }
+    if (status.fanFault)
+    {
+        return "FAN_FAULT";
+    }
+    if (status.vinUvFault)
+    {
+        return "VIN_UV_FAULT";
+    }
+    return {};
+}
+
+inline std::string_view criticalFaultName(std::uint16_t word)
+{
+    return criticalFaultName(decodeStatusWord(word));
+}
+
+inline std::string_view firstCriticalFaultName(const StatusWord& status)
+{
+    return criticalFaultName(status);
+}
+
+inline std::string_view firstCriticalFaultName(std::uint16_t word)
+{
+    return criticalFaultName(decodeStatusWord(word));
 }
 
 } // namespace psu::pmbus
