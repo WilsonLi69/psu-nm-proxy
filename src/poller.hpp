@@ -480,7 +480,7 @@ class Poller
                     {
                         cc = 0xC0;
                     }
-                    logger.logCommsFailure(psuName, cc);
+                    logger.logCommunicationLoss(psuName, cc);
                 }
             }
             return;
@@ -515,40 +515,41 @@ class Poller
             logger.logInserted(psuName);
             if (targetProfile == StateProfile::hwFault)
             {
-                logger.logHardwareFault(
-                    psuName,
-                    psu::pmbus::firstCriticalFaultName(*result.status),
-                    result.status->raw);
+                reportHardwareFault(*result.status);
             }
         }
         else if (wasCommFault)
         {
-            logger.logRecovery(psuName);
+            logger.logRecovery(psuName, lastFaultWasInputLoss);
             if (targetProfile == StateProfile::hwFault)
             {
-                logger.logHardwareFault(
-                    psuName,
-                    psu::pmbus::firstCriticalFaultName(*result.status),
-                    result.status->raw);
+                reportHardwareFault(*result.status);
             }
         }
         else if (wasHwFault)
         {
             if (targetProfile == StateProfile::operational)
             {
-                logger.logRecovery(psuName);
+                logger.logRecovery(psuName, lastFaultWasInputLoss);
             }
         }
         else // wasOperational
         {
             if (targetProfile == StateProfile::hwFault)
             {
-                logger.logHardwareFault(
-                    psuName,
-                    psu::pmbus::firstCriticalFaultName(*result.status),
-                    result.status->raw);
+                reportHardwareFault(*result.status);
             }
         }
+    }
+
+    // Report one hardware fault, remembering whether the episode opened as
+    // input-power loss so the matching recovery uses PowerRestored.
+    void reportHardwareFault(const pmbus::StatusWord& status)
+    {
+        const auto faultName = psu::pmbus::firstCriticalFaultName(status);
+        lastFaultWasInputLoss =
+            (faultName == psu::event::inputPowerLossFault);
+        logger.logHardwareFault(psuName, faultName, status.raw);
     }
 
     // Emit transitions once per crossing and mirror the slot's
@@ -629,6 +630,7 @@ class Poller
     std::uint64_t assetEpoch = 0;
     bool assetResolved = false;
     bool assetReadInFlight = false;
+    bool lastFaultWasInputLoss = false;
     bool lastPresent = false;
     bool lastFunctional = false;
     bool lastAvailable = false;

@@ -23,6 +23,7 @@ struct LoggedEvent
     std::string message;
     std::string severity;
     std::map<std::string, std::string> metadata;
+    std::string resolution;
 
     bool operator==(const LoggedEvent&) const = default;
 };
@@ -38,6 +39,7 @@ class FakeEventLogger : public psu::event::EventLogger
             psu::event::powerSupplyInsertedMessage,
             psu::event::severityInformational,
             {{"PSU", psuName}},
+            {},
         });
     }
 
@@ -47,10 +49,12 @@ class FakeEventLogger : public psu::event::EventLogger
             psu::event::powerSupplyRemovedMessage,
             psu::event::severityWarning,
             {{"PSU", psuName}},
+            "Power supply " + psuName +
+                " was removed. Check that it is correctly seated.",
         });
     }
 
-    void logCommsFailure(
+    void logCommunicationLoss(
         const std::string& psuName,
         std::optional<std::uint8_t> completionCode = std::nullopt) override
     {
@@ -62,13 +66,14 @@ class FakeEventLogger : public psu::event::EventLogger
             ccStr = buf;
         }
         events.push_back({
-            psu::event::powerSupplyFailureMessage,
+            psu::event::powerSupplyFailedMessage,
             psu::event::severityWarning,
             {
                 {"PSU", psuName},
-                {"ERROR", "COMMUNICATION_FAILURE"},
                 {"IPMB_CC", ccStr},
             },
+            "Power supply " + psuName +
+                " is not responding. Check the SMLink and ME path.",
         });
     }
 
@@ -78,23 +83,37 @@ class FakeEventLogger : public psu::event::EventLogger
     {
         char buf[16];
         std::snprintf(buf, sizeof(buf), "0x%04X", statusWord);
+
+        const bool inputPowerLoss =
+            faultName == psu::event::inputPowerLossFault;
+        std::string resolution = "Power supply " + psuName + " reported " +
+                                 std::string(faultName) + ". ";
+        resolution += inputPowerLoss
+                          ? "Check the AC input and reseat the unit."
+                          : "Check the power supply.";
+
         events.push_back({
-            psu::event::powerSupplyFailureMessage,
+            inputPowerLoss ? psu::event::powerSupplyPowerLostMessage
+                           : psu::event::powerSupplyFailedMessage,
             psu::event::severityCritical,
             {
                 {"PSU", psuName},
                 {"ERROR", std::string(faultName)},
                 {"STATUS_WORD", buf},
             },
+            resolution,
         });
     }
 
-    void logRecovery(const std::string& psuName) override
+    void logRecovery(const std::string& psuName,
+                     bool wasInputPowerLoss) override
     {
         events.push_back({
-            psu::event::powerSupplyRecoveryMessage,
+            wasInputPowerLoss ? psu::event::powerSupplyPowerRestoredMessage
+                              : psu::event::powerSupplyRecoveredMessage,
             psu::event::severityInformational,
             {{"PSU", psuName}},
+            {},
         });
     }
 };
@@ -138,10 +157,14 @@ TEST(EventLoggerContract, ConstantsMatchOpenBmcSpecification)
                  "OpenBMC.0.1.PowerSupplyInserted");
     EXPECT_STREQ(psu::event::powerSupplyRemovedMessage,
                  "OpenBMC.0.1.PowerSupplyRemoved");
-    EXPECT_STREQ(psu::event::powerSupplyFailureMessage,
-                 "OpenBMC.0.1.PowerSupplyFailure");
-    EXPECT_STREQ(psu::event::powerSupplyRecoveryMessage,
-                 "OpenBMC.0.1.PowerSupplyRecovery");
+    EXPECT_STREQ(psu::event::powerSupplyFailedMessage,
+                 "OpenBMC.0.1.PowerSupplyFailed");
+    EXPECT_STREQ(psu::event::powerSupplyRecoveredMessage,
+                 "OpenBMC.0.1.PowerSupplyRecovered");
+    EXPECT_STREQ(psu::event::powerSupplyPowerLostMessage,
+                 "OpenBMC.0.1.PowerSupplyPowerLost");
+    EXPECT_STREQ(psu::event::powerSupplyPowerRestoredMessage,
+                 "OpenBMC.0.1.PowerSupplyPowerRestored");
 
     EXPECT_STREQ(psu::event::severityInformational,
                  "xyz.openbmc_project.Logging.Entry.Level.Informational");
@@ -226,7 +249,7 @@ TEST(EventLoggerTransitions, RuntimeHotPlugEmitsPowerSupplyInserted)
     EXPECT_EQ(logger.events[1].metadata.at("PSU"), "PSU1");
 }
 
-// AC3: STATE_ABSENT -> STATE_HW_FAULT emits PowerSupplyInserted then PowerSupplyFailure (Critical)
+// AC3: STATE_ABSENT -> STATE_HW_FAULT emits PowerSupplyInserted then PowerSupplyFailed (Critical)
 TEST(EventLoggerTransitions, BootTick1DiscoveryWithHardwareFaultEmitsTwoEventsInOrder)
 {
     boost::asio::io_context io;
@@ -254,8 +277,8 @@ TEST(EventLoggerTransitions, BootTick1DiscoveryWithHardwareFaultEmitsTwoEventsIn
     EXPECT_EQ(logger.events[0].severity, psu::event::severityInformational);
     EXPECT_EQ(logger.events[0].metadata.at("PSU"), "PSU1");
 
-    // 2. PowerSupplyFailure with Severity = Critical and metadata
-    EXPECT_EQ(logger.events[1].message, psu::event::powerSupplyFailureMessage);
+    // 2. PowerSupplyFailed with Severity = Critical and metadata
+    EXPECT_EQ(logger.events[1].message, psu::event::powerSupplyFailedMessage);
     EXPECT_EQ(logger.events[1].severity, psu::event::severityCritical);
     EXPECT_EQ(logger.events[1].metadata.at("PSU"), "PSU1");
     EXPECT_EQ(logger.events[1].metadata.at("ERROR"), "FAN_FAULT");
@@ -304,8 +327,8 @@ TEST(EventLoggerTransitions, TwoConsecutive0x80EmitsPowerSupplyRemoved)
 }
 
 // AC5: Transitioning to STATE_COMM_FAULT due to consecutive 0xC0 comms failures
-// emits PowerSupplyFailure with Warning and [PSU=<name>, ERROR=COMMUNICATION_FAILURE, IPMB_CC=0x%02X]
-TEST(EventLoggerTransitions, CommsFailure0xC0EmitsPowerSupplyFailureWarning)
+// emits PowerSupplyFailed with Warning and [PSU=<name>, IPMB_CC=0x%02X] (no ERROR key)
+TEST(EventLoggerTransitions, CommsFailure0xC0EmitsPowerSupplyFailedWarning)
 {
     boost::asio::io_context io;
     ScriptedReader reader;
@@ -336,10 +359,10 @@ TEST(EventLoggerTransitions, CommsFailure0xC0EmitsPowerSupplyFailureWarning)
     poller.poll();
     EXPECT_EQ(poller.getProfile(), psu::sensors::StateProfile::commFault);
     ASSERT_EQ(logger.events.size(), 1U);
-    EXPECT_EQ(logger.events[0].message, psu::event::powerSupplyFailureMessage);
+    EXPECT_EQ(logger.events[0].message, psu::event::powerSupplyFailedMessage);
     EXPECT_EQ(logger.events[0].severity, psu::event::severityWarning);
     EXPECT_EQ(logger.events[0].metadata.at("PSU"), "PSU1");
-    EXPECT_EQ(logger.events[0].metadata.at("ERROR"), "COMMUNICATION_FAILURE");
+    EXPECT_EQ(logger.events[0].metadata.count("ERROR"), 0U);
     EXPECT_EQ(logger.events[0].metadata.at("IPMB_CC"), "0xC0");
 
     // Cycle 4: stays in STATE_COMM_FAULT, does not re-emit
@@ -348,8 +371,8 @@ TEST(EventLoggerTransitions, CommsFailure0xC0EmitsPowerSupplyFailureWarning)
 }
 
 // AC5: Transitioning to STATE_COMM_FAULT due to transport timeouts
-// emits PowerSupplyFailure with IPMB_CC=TRANSPORT_TIMEOUT
-TEST(EventLoggerTransitions, TransportTimeoutEmitsPowerSupplyFailureWithTransportTimeout)
+// emits PowerSupplyFailed with IPMB_CC=TRANSPORT_TIMEOUT
+TEST(EventLoggerTransitions, TransportTimeoutEmitsPowerSupplyFailedWithTransportTimeout)
 {
     boost::asio::io_context io;
     ScriptedReader reader;
@@ -378,15 +401,15 @@ TEST(EventLoggerTransitions, TransportTimeoutEmitsPowerSupplyFailureWithTranspor
     poller.poll(); // Cycle 2 -> threshold reached
     EXPECT_EQ(poller.getProfile(), psu::sensors::StateProfile::commFault);
     ASSERT_EQ(logger.events.size(), 1U);
-    EXPECT_EQ(logger.events[0].message, psu::event::powerSupplyFailureMessage);
+    EXPECT_EQ(logger.events[0].message, psu::event::powerSupplyFailedMessage);
     EXPECT_EQ(logger.events[0].severity, psu::event::severityWarning);
     EXPECT_EQ(logger.events[0].metadata.at("PSU"), "PSU2");
-    EXPECT_EQ(logger.events[0].metadata.at("ERROR"), "COMMUNICATION_FAILURE");
+    EXPECT_EQ(logger.events[0].metadata.count("ERROR"), 0U);
     EXPECT_EQ(logger.events[0].metadata.at("IPMB_CC"), "TRANSPORT_TIMEOUT");
 }
 
 // AC6: Transitioning from STATE_OPERATIONAL to STATE_HW_FAULT for each of 5 critical faults (mask 0x2704)
-// emits PowerSupplyFailure (Critical) with metadata [PSU=<name>, ERROR=<fault_name>, STATUS_WORD=0x%04X]
+// emits PowerSupplyFailed (Critical) with metadata [PSU=<name>, ERROR=<fault_name>, STATUS_WORD=0x%04X]
 TEST(EventLoggerTransitions, OperationalToHardwareFaultAllCriticalBits)
 {
     struct FaultCase
@@ -430,11 +453,15 @@ TEST(EventLoggerTransitions, OperationalToHardwareFaultAllCriticalBits)
 
         EXPECT_EQ(poller.getProfile(), psu::sensors::StateProfile::hwFault);
         ASSERT_EQ(logger.events.size(), 1U) << "Failed for fault " << testCase.faultName;
-        EXPECT_EQ(logger.events[0].message, psu::event::powerSupplyFailureMessage);
+        EXPECT_EQ(logger.events[0].message,
+                  testCase.faultName == "VIN_UV_FAULT"
+                      ? psu::event::powerSupplyPowerLostMessage
+                      : psu::event::powerSupplyFailedMessage);
         EXPECT_EQ(logger.events[0].severity, psu::event::severityCritical);
         EXPECT_EQ(logger.events[0].metadata.at("PSU"), "PSU1");
         EXPECT_EQ(logger.events[0].metadata.at("ERROR"), testCase.faultName);
         EXPECT_EQ(logger.events[0].metadata.at("STATUS_WORD"), testCase.wordHex);
+        EXPECT_NE(logger.events[0].resolution.find("PSU1"), std::string::npos);
 
         // Next cycle with same fault does not duplicate log
         poller.poll();
@@ -442,7 +469,7 @@ TEST(EventLoggerTransitions, OperationalToHardwareFaultAllCriticalBits)
     }
 }
 
-// AC7: Transitioning from STATE_COMM_FAULT to STATE_OPERATIONAL on clean poll emits PowerSupplyRecovery (Informational)
+// AC7: Transitioning from STATE_COMM_FAULT to STATE_OPERATIONAL on clean poll emits PowerSupplyRecovered (Informational)
 TEST(EventLoggerTransitions, CleanPollRecoversFromCommFault)
 {
     boost::asio::io_context io;
@@ -474,12 +501,12 @@ TEST(EventLoggerTransitions, CleanPollRecoversFromCommFault)
     poller.poll();
     EXPECT_EQ(poller.getProfile(), psu::sensors::StateProfile::operational);
     ASSERT_EQ(logger.events.size(), 2U);
-    EXPECT_EQ(logger.events[1].message, psu::event::powerSupplyRecoveryMessage);
+    EXPECT_EQ(logger.events[1].message, psu::event::powerSupplyRecoveredMessage);
     EXPECT_EQ(logger.events[1].severity, psu::event::severityInformational);
     EXPECT_EQ(logger.events[1].metadata.at("PSU"), "PSU1");
 }
 
-// AC7: Transitioning from STATE_HW_FAULT to STATE_OPERATIONAL on clean poll emits PowerSupplyRecovery (Informational)
+// AC7: Transitioning from STATE_HW_FAULT to STATE_OPERATIONAL on clean poll emits PowerSupplyRecovered (Informational)
 TEST(EventLoggerTransitions, CleanPollRecoversFromHardwareFault)
 {
     boost::asio::io_context io;
@@ -506,15 +533,15 @@ TEST(EventLoggerTransitions, CleanPollRecoversFromHardwareFault)
     poller.poll();
     EXPECT_EQ(poller.getProfile(), psu::sensors::StateProfile::operational);
     ASSERT_EQ(logger.events.size(), 1U);
-    EXPECT_EQ(logger.events[0].message, psu::event::powerSupplyRecoveryMessage);
+    EXPECT_EQ(logger.events[0].message, psu::event::powerSupplyRecoveredMessage);
     EXPECT_EQ(logger.events[0].severity, psu::event::severityInformational);
     EXPECT_EQ(logger.events[0].metadata.at("PSU"), "PSU1");
 }
 
 // AC8: Transitioning from STATE_COMM_FAULT to STATE_HW_FAULT on resumed communication with critical fault
 // emits exact sequential order:
-//   1. OpenBMC.0.1.PowerSupplyRecovery (Informational)
-//   2. OpenBMC.0.1.PowerSupplyFailure (Critical) with metadata
+//   1. OpenBMC.0.1.PowerSupplyRecovered (Informational)
+//   2. OpenBMC.0.1.PowerSupplyFailed (Critical) with metadata
 TEST(EventLoggerTransitions, ResumedCommsWithHardwareFaultEmitsRecoveryThenFailure)
 {
     boost::asio::io_context io;
@@ -548,13 +575,13 @@ TEST(EventLoggerTransitions, ResumedCommsWithHardwareFaultEmitsRecoveryThenFailu
     EXPECT_EQ(poller.getProfile(), psu::sensors::StateProfile::hwFault);
     ASSERT_EQ(logger.events.size(), 2U);
 
-    // 1. PowerSupplyRecovery (Informational) closing comms fault
-    EXPECT_EQ(logger.events[0].message, psu::event::powerSupplyRecoveryMessage);
+    // 1. PowerSupplyRecovered (Informational) closing comms fault
+    EXPECT_EQ(logger.events[0].message, psu::event::powerSupplyRecoveredMessage);
     EXPECT_EQ(logger.events[0].severity, psu::event::severityInformational);
     EXPECT_EQ(logger.events[0].metadata.at("PSU"), "PSU1");
 
-    // 2. PowerSupplyFailure (Critical) asserting hardware fault
-    EXPECT_EQ(logger.events[1].message, psu::event::powerSupplyFailureMessage);
+    // 2. PowerSupplyFailed (Critical) asserting hardware fault
+    EXPECT_EQ(logger.events[1].message, psu::event::powerSupplyFailedMessage);
     EXPECT_EQ(logger.events[1].severity, psu::event::severityCritical);
     EXPECT_EQ(logger.events[1].metadata.at("PSU"), "PSU1");
     EXPECT_EQ(logger.events[1].metadata.at("ERROR"), "TEMPERATURE_FAULT");
@@ -562,8 +589,8 @@ TEST(EventLoggerTransitions, ResumedCommsWithHardwareFaultEmitsRecoveryThenFailu
 }
 
 // Edge case caveat: Severity Downgrade (STATE_HW_FAULT -> STATE_COMM_FAULT)
-// Table 3.4.3: Hardware-faulted PSU experiences 3 consecutive comms failures emits PowerSupplyFailure (Warning).
-// When comms recovers with unresolved HW fault, re-emits PowerSupplyRecovery and PowerSupplyFailure (Critical).
+// Table 3.4.3: Hardware-faulted PSU experiences 3 consecutive comms failures emits PowerSupplyFailed (Warning).
+// When comms recovers with unresolved HW fault, re-emits PowerSupplyRecovered and PowerSupplyFailed (Critical).
 TEST(EventLoggerTransitions, SeverityDowngradeAndReassertion)
 {
     boost::asio::io_context io;
@@ -594,9 +621,9 @@ TEST(EventLoggerTransitions, SeverityDowngradeAndReassertion)
     poller.poll();
     EXPECT_EQ(poller.getProfile(), psu::sensors::StateProfile::commFault);
     ASSERT_EQ(logger.events.size(), 1U);
-    EXPECT_EQ(logger.events[0].message, psu::event::powerSupplyFailureMessage);
+    EXPECT_EQ(logger.events[0].message, psu::event::powerSupplyFailedMessage);
     EXPECT_EQ(logger.events[0].severity, psu::event::severityWarning);
-    EXPECT_EQ(logger.events[0].metadata.at("ERROR"), "COMMUNICATION_FAILURE");
+    EXPECT_EQ(logger.events[0].metadata.count("ERROR"), 0U);
     logger.events.clear();
 
     // Comms recovers with unresolved FAN_FAULT -> re-emits Recovery (Info) and Failure (Critical)
@@ -604,9 +631,9 @@ TEST(EventLoggerTransitions, SeverityDowngradeAndReassertion)
     poller.poll();
     EXPECT_EQ(poller.getProfile(), psu::sensors::StateProfile::hwFault);
     ASSERT_EQ(logger.events.size(), 2U);
-    EXPECT_EQ(logger.events[0].message, psu::event::powerSupplyRecoveryMessage);
+    EXPECT_EQ(logger.events[0].message, psu::event::powerSupplyRecoveredMessage);
     EXPECT_EQ(logger.events[0].severity, psu::event::severityInformational);
-    EXPECT_EQ(logger.events[1].message, psu::event::powerSupplyFailureMessage);
+    EXPECT_EQ(logger.events[1].message, psu::event::powerSupplyFailedMessage);
     EXPECT_EQ(logger.events[1].severity, psu::event::severityCritical);
     EXPECT_EQ(logger.events[1].metadata.at("ERROR"), "FAN_FAULT");
     EXPECT_EQ(logger.events[1].metadata.at("STATUS_WORD"), "0x0400");
@@ -688,4 +715,99 @@ TEST(EventLoggerTransitions, PollCyclesNeverIssueClearFaults)
 
     ASSERT_FALSE(reader.calls.empty());
     EXPECT_EQ(std::count(reader.calls.begin(), reader.calls.end(), 0x03), 0);
+}
+
+TEST(EventLoggerTransitions, HardwareFaultRecordNamesTheSupplyInResolution)
+{
+    boost::asio::io_context io;
+    ScriptedReader reader;
+    reader.responses[0x20] = 0x001C;
+    reader.responses[0x79] = 0x0000;
+    reader.responses[0x88] = 0x0002;
+
+    DummyPublisher publisher;
+    FakeEventLogger logger;
+    std::vector<const psu::sensors::SensorDef*> defs = {sensorDef("vin")};
+
+    psu::sensors::Poller poller(
+        io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
+        defs, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB0,
+        nullptr, nullptr, &logger);
+
+    poller.start();
+    logger.events.clear();
+
+    reader.responses[0x79] = 0x0400; // FAN_FAULT
+    poller.poll();
+
+    ASSERT_EQ(logger.events.size(), 1U);
+    EXPECT_EQ(logger.events[0].message, psu::event::powerSupplyFailedMessage);
+    EXPECT_NE(logger.events[0].resolution.find("PSU1"), std::string::npos);
+    EXPECT_NE(logger.events[0].resolution.find("FAN_FAULT"),
+              std::string::npos);
+}
+
+TEST(EventLoggerTransitions, InputPowerLossRecoveryEmitsPowerRestored)
+{
+    boost::asio::io_context io;
+    ScriptedReader reader;
+    reader.responses[0x20] = 0x001C;
+    reader.responses[0x79] = 0x0000;
+    reader.responses[0x88] = 0x0002;
+
+    DummyPublisher publisher;
+    FakeEventLogger logger;
+    std::vector<const psu::sensors::SensorDef*> defs = {sensorDef("vin")};
+
+    psu::sensors::Poller poller(
+        io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
+        defs, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB0,
+        nullptr, nullptr, &logger);
+
+    poller.start();
+    logger.events.clear();
+
+    reader.responses[0x79] = 0x2000; // VIN_UV_FAULT: input power loss
+    poller.poll();
+    ASSERT_EQ(logger.events.size(), 1U);
+    EXPECT_EQ(logger.events[0].message,
+              psu::event::powerSupplyPowerLostMessage);
+
+    reader.responses[0x79] = 0x0000; // fault observed cleared
+    poller.poll();
+    ASSERT_EQ(logger.events.size(), 2U);
+    EXPECT_EQ(logger.events[1].message,
+              psu::event::powerSupplyPowerRestoredMessage);
+    EXPECT_EQ(logger.events[1].severity, psu::event::severityInformational);
+}
+
+TEST(EventLoggerTransitions, NonInputFaultRecoveryEmitsPowerSupplyRecovered)
+{
+    boost::asio::io_context io;
+    ScriptedReader reader;
+    reader.responses[0x20] = 0x001C;
+    reader.responses[0x79] = 0x0000;
+    reader.responses[0x88] = 0x0002;
+
+    DummyPublisher publisher;
+    FakeEventLogger logger;
+    std::vector<const psu::sensors::SensorDef*> defs = {sensorDef("vin")};
+
+    psu::sensors::Poller poller(
+        io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
+        defs, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB0,
+        nullptr, nullptr, &logger);
+
+    poller.start();
+    logger.events.clear();
+
+    reader.responses[0x79] = 0x0200; // IOUT_OC_FAULT
+    poller.poll();
+    ASSERT_EQ(logger.events.size(), 1U);
+
+    reader.responses[0x79] = 0x0000;
+    poller.poll();
+    ASSERT_EQ(logger.events.size(), 2U);
+    EXPECT_EQ(logger.events[1].message,
+              psu::event::powerSupplyRecoveredMessage);
 }

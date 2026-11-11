@@ -127,7 +127,13 @@ class DbusInventorySink : public InventorySink
 };
 
 // D-Bus event logger adapter invoking xyz.openbmc_project.Logging.Create on
-// /xyz/openbmc_project/logging (ADR-0003 & spec §5.7).
+// /xyz/openbmc_project/logging (spec §5.7, Doc 2 §4.4).
+//
+// The message text is the registry identifier alone. Diagnostics travel in
+// AdditionalData. The remediation sentence goes into the created entry's
+// Resolution property: at the pinned phosphor-logging revision Create() takes no
+// metadata argument and nothing else populates that property, so it is set on
+// the returned entry path immediately after creation.
 class DbusEventLogger : public psu::event::EventLogger
 {
   public:
@@ -136,18 +142,18 @@ class DbusEventLogger : public psu::event::EventLogger
     void logInserted(const std::string& psuName) override
     {
         emitLog(psu::event::powerSupplyInsertedMessage,
-                psu::event::severityInformational,
-                {{"PSU", psuName}});
+                psu::event::severityInformational, {{"PSU", psuName}}, {});
     }
 
     void logRemoved(const std::string& psuName) override
     {
         emitLog(psu::event::powerSupplyRemovedMessage,
-                psu::event::severityWarning,
-                {{"PSU", psuName}});
+                psu::event::severityWarning, {{"PSU", psuName}},
+                "Power supply " + psuName +
+                    " was removed. Check that it is correctly seated.");
     }
 
-    void logCommsFailure(
+    void logCommunicationLoss(
         const std::string& psuName,
         std::optional<std::uint8_t> completionCode = std::nullopt) override
     {
@@ -158,11 +164,11 @@ class DbusEventLogger : public psu::event::EventLogger
             std::snprintf(buf, sizeof(buf), "0x%02X", *completionCode);
             ccStr = buf;
         }
-        emitLog(psu::event::powerSupplyFailureMessage,
+        emitLog(psu::event::powerSupplyFailedMessage,
                 psu::event::severityWarning,
-                {{"PSU", psuName},
-                 {"ERROR", "COMMUNICATION_FAILURE"},
-                 {"IPMB_CC", ccStr}});
+                {{"PSU", psuName}, {"IPMB_CC", ccStr}},
+                "Power supply " + psuName +
+                    " is not responding. Check the SMLink and ME path.");
     }
 
     void logHardwareFault(const std::string& psuName,
@@ -171,23 +177,37 @@ class DbusEventLogger : public psu::event::EventLogger
     {
         char buf[16];
         std::snprintf(buf, sizeof(buf), "0x%04X", statusWord);
-        emitLog(psu::event::powerSupplyFailureMessage,
+
+        const bool inputPowerLoss =
+            faultName == psu::event::inputPowerLossFault;
+        std::string resolution = "Power supply " + psuName + " reported " +
+                                 std::string(faultName) + ". ";
+        resolution += inputPowerLoss
+                          ? "Check the AC input and reseat the unit."
+                          : "Check the power supply.";
+
+        emitLog(inputPowerLoss ? psu::event::powerSupplyPowerLostMessage
+                               : psu::event::powerSupplyFailedMessage,
                 psu::event::severityCritical,
                 {{"PSU", psuName},
                  {"ERROR", std::string(faultName)},
-                 {"STATUS_WORD", buf}});
+                 {"STATUS_WORD", buf}},
+                resolution);
     }
 
-    void logRecovery(const std::string& psuName) override
+    void logRecovery(const std::string& psuName,
+                     bool wasInputPowerLoss) override
     {
-        emitLog(psu::event::powerSupplyRecoveryMessage,
-                psu::event::severityInformational,
-                {{"PSU", psuName}});
+        emitLog(wasInputPowerLoss
+                    ? psu::event::powerSupplyPowerRestoredMessage
+                    : psu::event::powerSupplyRecoveredMessage,
+                psu::event::severityInformational, {{"PSU", psuName}}, {});
     }
 
   private:
     void emitLog(const std::string& message, const std::string& severity,
-                 const std::map<std::string, std::string>& additionalData)
+                 const std::map<std::string, std::string>& additionalData,
+                 const std::string& resolution)
     {
         std::string psu;
         auto it = additionalData.find("PSU");
@@ -197,12 +217,34 @@ class DbusEventLogger : public psu::event::EventLogger
         }
 
         conn.async_method_call(
-            [message, psu](const boost::system::error_code& ec) {
+            [this, message, psu,
+             resolution](const boost::system::error_code& ec,
+                         sdbusplus::message::object_path entryPath) {
                 if (ec)
                 {
                     std::cerr << "psu-nm-proxy: failed to log " << message
                               << " for " << psu << ": " << ec.message() << "\n";
+                    return;
                 }
+                if (resolution.empty())
+                {
+                    return;
+                }
+                conn.async_method_call(
+                    [message](const boost::system::error_code& ec) {
+                        if (ec)
+                        {
+                            std::cerr << "psu-nm-proxy: failed to set "
+                                         "resolution for "
+                                      << message << ": " << ec.message()
+                                      << "\n";
+                        }
+                    },
+                    "xyz.openbmc_project.Logging", entryPath.str,
+                    "org.freedesktop.DBus.Properties", "Set",
+                    std::string("xyz.openbmc_project.Logging.Entry"),
+                    std::string("Resolution"),
+                    std::variant<std::string>(resolution));
             },
             "xyz.openbmc_project.Logging",
             "/xyz/openbmc_project/logging",
