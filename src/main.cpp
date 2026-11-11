@@ -45,12 +45,7 @@ void logConfig(const psu::config::Config& config)
     }
     std::cerr << "pollIntervalMs=" << config.pollIntervalMs
               << " failuresBeforeNotFunctional="
-              << config.failuresBeforeNotFunctional << " thresholds=";
-    for (const auto& [label, _] : config.thresholds)
-    {
-        std::cerr << label << " ";
-    }
-    std::cerr << "\n";
+              << config.failuresBeforeNotFunctional << "\n";
 }
 
 } // namespace
@@ -104,9 +99,8 @@ int main(int argc, char* argv[])
                 auto poller = std::make_unique<psu::sensors::Poller>(
                     io, *conn, *server, slot.name, slot.address8, pollInterval,
                     config.failuresBeforeNotFunctional, sensorDefs,
-                    config.thresholds, slot.updateInventoryHealth,
-                    slot.present, nmClient.get(), invSink.get(),
-                    eventLogger.get());
+                    slot.updateInventoryHealth, slot.present, nmClient.get(),
+                    invSink.get(), eventLogger.get());
                 poller->start();
                 pollers->push_back(std::move(poller));
             }

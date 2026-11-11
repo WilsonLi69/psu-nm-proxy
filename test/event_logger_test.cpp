@@ -118,11 +118,10 @@ class DummyPublisher : public psu::sensors::SensorPublisher
 {
   public:
     void publishSensor(std::size_t, const std::string&,
-                       const psu::sensors::SensorDef&, double, bool, bool,
-                       const psu::sensors::ThresholdProperties&) override
+                       const psu::sensors::SensorDef&, double, bool) override
     {}
     void updateValue(std::size_t, double) override {}
-    void updateStatus(std::size_t, bool, bool) override {}
+    void updateAvailable(std::size_t, bool) override {}
 };
 
 const psu::sensors::SensorDef* sensorDef(const char* label)
@@ -169,7 +168,7 @@ TEST(EventLoggerTransitions, BootTick1DiscoveryEmitsPowerSupplyInserted)
     // Slot starts under STATE_ABSENT
     psu::sensors::Poller poller(
         io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
-        defs, {}, {}, /*initiallyPresent=*/false, /*psuAddr8=*/0xB0,
+        defs, {}, /*initiallyPresent=*/false, /*psuAddr8=*/0xB0,
         nullptr, nullptr, &logger);
 
     EXPECT_EQ(poller.getProfile(), psu::sensors::StateProfile::absent);
@@ -204,7 +203,7 @@ TEST(EventLoggerTransitions, RuntimeHotPlugEmitsPowerSupplyInserted)
 
     psu::sensors::Poller poller(
         io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
-        defs, {}, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB0,
+        defs, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB0,
         nullptr, nullptr, &logger);
 
     poller.start();
@@ -242,7 +241,7 @@ TEST(EventLoggerTransitions, BootTick1DiscoveryWithHardwareFaultEmitsTwoEventsIn
 
     psu::sensors::Poller poller(
         io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
-        defs, {}, {}, /*initiallyPresent=*/false, /*psuAddr8=*/0xB0,
+        defs, {}, /*initiallyPresent=*/false, /*psuAddr8=*/0xB0,
         nullptr, nullptr, &logger);
 
     poller.start();
@@ -278,7 +277,7 @@ TEST(EventLoggerTransitions, TwoConsecutive0x80EmitsPowerSupplyRemoved)
 
     psu::sensors::Poller poller(
         io, reader, publisher, "PSU2", std::chrono::milliseconds(1000), 3,
-        defs, {}, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB2,
+        defs, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB2,
         nullptr, nullptr, &logger);
 
     poller.start();
@@ -320,7 +319,7 @@ TEST(EventLoggerTransitions, CommsFailure0xC0EmitsPowerSupplyFailureWarning)
 
     psu::sensors::Poller poller(
         io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
-        defs, {}, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB0,
+        defs, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB0,
         nullptr, nullptr, &logger);
 
     poller.start();
@@ -365,7 +364,7 @@ TEST(EventLoggerTransitions, TransportTimeoutEmitsPowerSupplyFailureWithTranspor
     // failure threshold = 2
     psu::sensors::Poller poller(
         io, reader, publisher, "PSU2", std::chrono::milliseconds(1000), 2,
-        defs, {}, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB2,
+        defs, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB2,
         nullptr, nullptr, &logger);
 
     poller.start();
@@ -419,7 +418,7 @@ TEST(EventLoggerTransitions, OperationalToHardwareFaultAllCriticalBits)
 
         psu::sensors::Poller poller(
             io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
-            defs, {}, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB0,
+            defs, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB0,
             nullptr, nullptr, &logger);
 
         poller.start();
@@ -458,7 +457,7 @@ TEST(EventLoggerTransitions, CleanPollRecoversFromCommFault)
 
     psu::sensors::Poller poller(
         io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 1,
-        defs, {}, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB0,
+        defs, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB0,
         nullptr, nullptr, &logger);
 
     poller.start();
@@ -495,7 +494,7 @@ TEST(EventLoggerTransitions, CleanPollRecoversFromHardwareFault)
 
     psu::sensors::Poller poller(
         io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
-        defs, {}, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB0,
+        defs, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB0,
         nullptr, nullptr, &logger);
 
     poller.start();
@@ -530,7 +529,7 @@ TEST(EventLoggerTransitions, ResumedCommsWithHardwareFaultEmitsRecoveryThenFailu
 
     psu::sensors::Poller poller(
         io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 1,
-        defs, {}, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB0,
+        defs, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB0,
         nullptr, nullptr, &logger);
 
     poller.start();
@@ -579,7 +578,7 @@ TEST(EventLoggerTransitions, SeverityDowngradeAndReassertion)
 
     psu::sensors::Poller poller(
         io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 2,
-        defs, {}, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB0,
+        defs, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB0,
         nullptr, nullptr, &logger);
 
     poller.start();
@@ -628,7 +627,7 @@ TEST(EventLoggerTransitions, RoutinePowerTransitionsAndWarningsDoNotEmitEventLog
 
     psu::sensors::Poller poller(
         io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
-        defs, {}, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB0,
+        defs, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB0,
         nullptr, nullptr, &logger);
 
     poller.start();
@@ -675,7 +674,7 @@ TEST(EventLoggerTransitions, PollCyclesNeverIssueClearFaults)
 
     psu::sensors::Poller poller(
         io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
-        defs, {}, {}, /*initiallyPresent=*/false, /*psuAddr8=*/0xB0,
+        defs, {}, /*initiallyPresent=*/false, /*psuAddr8=*/0xB0,
         nullptr, nullptr, &logger);
 
     poller.start();

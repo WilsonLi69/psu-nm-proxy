@@ -28,8 +28,7 @@ std::vector<std::string> defaultSensorWhitelist();
 // (each slot falls back to "PSU<slot>"), expectedSlots is empty (all discovered
 // slots), chassisId is empty (the sole Board/Chassis object is used when there
 // is exactly one), sensorWhitelist is the full §8 set, pollIntervalMs 1000,
-// failuresBeforeNotFunctional 3, and thresholds empty (no D-Bus threshold
-// properties published).
+// and failuresBeforeNotFunctional 3.
 struct Config
 {
     std::map<std::uint8_t, std::string> psuNames;
@@ -40,7 +39,6 @@ struct Config
     std::vector<std::string> sensorWhitelist = defaultSensorWhitelist();
     std::uint32_t pollIntervalMs = defaultPollIntervalMs;
     std::size_t failuresBeforeNotFunctional = defaultFailuresBeforeNotFunctional;
-    std::map<std::string, psu::sensors::Thresholds> thresholds;
 
     bool operator==(const Config&) const = default;
 };

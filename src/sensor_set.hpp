@@ -130,65 +130,6 @@ inline std::string sensorPath(std::string_view psuName, const SensorDef& def)
            std::string(psuName) + "_" + label;
 }
 
-// Per-label Sensor.Threshold bounds (spec §6). Each bound is optional: only the
-// metrics present in config are published as D-Bus properties.
-struct Thresholds
-{
-    std::optional<double> upperWarning;
-    std::optional<double> lowerWarning;
-    std::optional<double> upperCritical;
-    std::optional<double> lowerCritical;
-
-    bool operator==(const Thresholds&) const = default;
-};
-
-// D-Bus threshold interfaces (spec §5.6).
-inline constexpr auto warningThresholdInterface =
-    "xyz.openbmc_project.Sensor.Threshold.Warning";
-inline constexpr auto criticalThresholdInterface =
-    "xyz.openbmc_project.Sensor.Threshold.Critical";
-
-// Property maps for the threshold interfaces. An empty map means that
-// interface must not be created (a label with no configured thresholds
-// publishes no threshold properties).
-struct ThresholdProperties
-{
-    std::map<std::string, double> warning;
-    std::map<std::string, double> critical;
-
-    bool empty() const
-    {
-        return warning.empty() && critical.empty();
-    }
-
-    bool operator==(const ThresholdProperties&) const = default;
-};
-
-// Map configured bounds onto their D-Bus property names: WarningHigh /
-// WarningLow on the Warning interface, CriticalHigh / CriticalLow on the
-// Critical interface (spec §5.6).
-inline ThresholdProperties thresholdProperties(const Thresholds& thresholds)
-{
-    ThresholdProperties props;
-    if (thresholds.upperWarning)
-    {
-        props.warning["WarningHigh"] = *thresholds.upperWarning;
-    }
-    if (thresholds.lowerWarning)
-    {
-        props.warning["WarningLow"] = *thresholds.lowerWarning;
-    }
-    if (thresholds.upperCritical)
-    {
-        props.critical["CriticalHigh"] = *thresholds.upperCritical;
-    }
-    if (thresholds.lowerCritical)
-    {
-        props.critical["CriticalLow"] = *thresholds.lowerCritical;
-    }
-    return props;
-}
-
 // Look up a sensor definition by its §8 label, or nullptr if unknown.
 inline const SensorDef* findSensor(std::string_view label)
 {
@@ -203,13 +144,12 @@ inline const SensorDef* findSensor(std::string_view label)
 }
 
 // Initial D-Bus property values for a published sensor object at startup
-// (spec §5.6): populated slots start at Value=0.0, Functional=true,
-// Available=true; unpopulated slots start at Value=NaN, Functional=false,
-// Available=false.
+// (spec §5.6): populated slots start at Value=0.0 and Available=true;
+// unpopulated slots start at Value=NaN and Available=false. Sensors carry no
+// health state of their own.
 struct InitialSensorState
 {
     double value;
-    bool functional;
     bool available;
 };
 
@@ -217,9 +157,9 @@ inline constexpr InitialSensorState initialSensorState(bool initiallyPresent)
 {
     if (initiallyPresent)
     {
-        return {0.0, true, true};
+        return {0.0, true};
     }
-    return {std::numeric_limits<double>::quiet_NaN(), false, false};
+    return {std::numeric_limits<double>::quiet_NaN(), false};
 }
 
 } // namespace psu::sensors

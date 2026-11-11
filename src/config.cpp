@@ -248,65 +248,6 @@ std::optional<std::int64_t> positiveInteger(const nlohmann::json& value)
     return std::nullopt;
 }
 
-void readThreshold(const nlohmann::json& entry, const char* key,
-                   std::optional<double>& out)
-{
-    const auto it = entry.find(key);
-    if (it == entry.end())
-    {
-        return;
-    }
-    if (!it->is_number())
-    {
-        logFallback("thresholds");
-        return;
-    }
-    double value = 0.0;
-    try
-    {
-        value = it->get<double>();
-    }
-    catch (const nlohmann::json::exception&)
-    {
-        logFallback("thresholds");
-        return;
-    }
-    if (value < 0.0 || !std::isfinite(value))
-    {
-        logFallback("thresholds");
-        return;
-    }
-    out = value;
-}
-
-void parseThresholds(const nlohmann::json& value, Config& config)
-{
-    if (!value.is_object())
-    {
-        logFallback("thresholds");
-        return;
-    }
-    for (const auto& [label, entry] : value.items())
-    {
-        if (entry.is_object() &&
-            psu::sensors::findSensor(label) != nullptr)
-        {
-            psu::sensors::Thresholds thresholds;
-            readThreshold(entry, "upperWarning", thresholds.upperWarning);
-            readThreshold(entry, "lowerWarning", thresholds.lowerWarning);
-            readThreshold(entry, "upperCritical", thresholds.upperCritical);
-            readThreshold(entry, "lowerCritical", thresholds.lowerCritical);
-            if (thresholds.upperWarning || thresholds.lowerWarning ||
-                thresholds.upperCritical || thresholds.lowerCritical)
-            {
-                config.thresholds[label] = thresholds;
-                continue;
-            }
-        }
-        logFallback("thresholds");
-    }
-}
-
 } // namespace
 
 std::vector<std::string> defaultSensorWhitelist()
@@ -370,11 +311,6 @@ Config parseConfig(std::string_view json)
     if (const auto it = doc.find("sensorWhitelist"); it != doc.end())
     {
         parseSensorWhitelist(*it, config);
-    }
-
-    if (const auto it = doc.find("thresholds"); it != doc.end())
-    {
-        parseThresholds(*it, config);
     }
 
     if (const auto it = doc.find("pollIntervalMs"); it != doc.end())

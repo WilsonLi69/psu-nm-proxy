@@ -78,28 +78,19 @@ class FakeSensorPublisher : public psu::sensors::SensorPublisher
         std::string path;
         std::string_view label;
         double value = 0.0;
-        bool functional = false;
         bool available = false;
-        psu::sensors::ThresholdProperties thresholds;
     };
 
     void publishSensor(std::size_t index, const std::string& path,
                        const psu::sensors::SensorDef& def, double initialValue,
-                       bool initialFunctional, bool initialAvailable,
-                       const psu::sensors::ThresholdProperties& thresholds)
-        override
+                       bool initialAvailable) override
     {
         if (index >= sensors.size())
         {
             sensors.resize(index + 1);
         }
         sensors[index] =
-            SensorRecord{path,
-                         def.label,
-                         initialValue,
-                         initialFunctional,
-                         initialAvailable,
-                         thresholds};
+            SensorRecord{path, def.label, initialValue, initialAvailable};
     }
 
     void updateValue(std::size_t index, double value) override
@@ -110,12 +101,10 @@ class FakeSensorPublisher : public psu::sensors::SensorPublisher
         }
     }
 
-    void updateStatus(std::size_t index, bool functional,
-                      bool available) override
+    void updateAvailable(std::size_t index, bool available) override
     {
         if (index < sensors.size())
         {
-            sensors[index].functional = functional;
             sensors[index].available = available;
         }
     }
@@ -468,7 +457,7 @@ TEST(PollerInitTest, UnpopulatedSlotInitializesSensorsWithNaNUnavailableAndNotFu
 
     psu::sensors::Poller poller(
         io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
-        defs, {}, {}, /*initiallyPresent=*/false);
+        defs, {}, /*initiallyPresent=*/false);
 
     EXPECT_FALSE(poller.isPresent());
     EXPECT_FALSE(poller.isFunctional());
@@ -479,7 +468,6 @@ TEST(PollerInitTest, UnpopulatedSlotInitializesSensorsWithNaNUnavailableAndNotFu
     for (const auto& s : publisher.sensors)
     {
         EXPECT_TRUE(std::isnan(s.value)) << s.path;
-        EXPECT_FALSE(s.functional) << s.path;
         EXPECT_FALSE(s.available) << s.path;
     }
 
@@ -492,7 +480,6 @@ TEST(PollerInitTest, UnpopulatedSlotInitializesSensorsWithNaNUnavailableAndNotFu
     for (const auto& s : publisher.sensors)
     {
         EXPECT_TRUE(std::isnan(s.value)) << s.path;
-        EXPECT_FALSE(s.functional) << s.path;
         EXPECT_FALSE(s.available) << s.path;
     }
 }
@@ -512,7 +499,7 @@ TEST(PollerInitTest, PopulatedSlotInitializesSensorsAndUpdatesLiveValuesOnStart)
 
     psu::sensors::Poller poller(
         io, reader, publisher, "PSU2", std::chrono::milliseconds(1000), 3,
-        defs, {}, {}, /*initiallyPresent=*/true);
+        defs, {}, /*initiallyPresent=*/true);
 
     EXPECT_TRUE(poller.isPresent());
     EXPECT_TRUE(poller.isFunctional());
@@ -522,7 +509,6 @@ TEST(PollerInitTest, PopulatedSlotInitializesSensorsAndUpdatesLiveValuesOnStart)
     for (const auto& s : publisher.sensors)
     {
         EXPECT_DOUBLE_EQ(s.value, 0.0);
-        EXPECT_TRUE(s.functional);
         EXPECT_TRUE(s.available);
     }
 
@@ -534,7 +520,6 @@ TEST(PollerInitTest, PopulatedSlotInitializesSensorsAndUpdatesLiveValuesOnStart)
     EXPECT_EQ(poller.getProfile(), psu::sensors::StateProfile::operational);
     EXPECT_DOUBLE_EQ(publisher.sensors[0].value, 2.0);
     EXPECT_DOUBLE_EQ(publisher.sensors[1].value, 12.0);
-    EXPECT_TRUE(publisher.sensors[0].functional);
     EXPECT_TRUE(publisher.sensors[0].available);
 }
 
@@ -563,7 +548,7 @@ TEST(PollerProfileTransitions, CriticalFaultAppliesStateHwFaultAndCleanReadRecov
 
     psu::sensors::Poller poller(
         io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
-        defs, {}, onHealth, /*initiallyPresent=*/true);
+        defs, onHealth, /*initiallyPresent=*/true);
 
     // Initial state: STATE_OPERATIONAL
     EXPECT_TRUE(poller.isPresent());
@@ -579,7 +564,6 @@ TEST(PollerProfileTransitions, CriticalFaultAppliesStateHwFaultAndCleanReadRecov
     EXPECT_TRUE(poller.isAvailable());
     EXPECT_EQ(poller.getProfile(), psu::sensors::StateProfile::hwFault);
     EXPECT_TRUE(publisher.sensors[0].available);
-    EXPECT_FALSE(publisher.sensors[0].functional);
     EXPECT_DOUBLE_EQ(publisher.sensors[0].value, 2.0);
 
     EXPECT_TRUE(transitionReported);
@@ -607,7 +591,7 @@ TEST(PollerProfileTransitions, CommsFailureAppliesStateCommFaultAndCleanReadReco
     // failure threshold = 1 cycle for deterministic testing
     psu::sensors::Poller poller(
         io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 1,
-        defs, {}, onHealth, /*initiallyPresent=*/true);
+        defs, onHealth, /*initiallyPresent=*/true);
 
     EXPECT_TRUE(poller.isPresent());
     EXPECT_TRUE(poller.isFunctional());
@@ -621,7 +605,6 @@ TEST(PollerProfileTransitions, CommsFailureAppliesStateCommFaultAndCleanReadReco
     EXPECT_FALSE(poller.isAvailable());
     EXPECT_EQ(poller.getProfile(), psu::sensors::StateProfile::commFault);
     EXPECT_FALSE(publisher.sensors[0].available);
-    EXPECT_FALSE(publisher.sensors[0].functional);
 
     ASSERT_FALSE(transitions.empty());
     const auto& [present, functional, available] = transitions.back();
@@ -644,7 +627,7 @@ TEST(PollerDynamicPresence, OneCycle0x80DebouncesWithoutUnplugging)
 
     psu::sensors::Poller poller(
         io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
-        defs, {}, {}, /*initiallyPresent=*/true);
+        defs, {}, /*initiallyPresent=*/true);
 
     poller.start();
     EXPECT_TRUE(poller.isPresent());
@@ -683,7 +666,7 @@ TEST(PollerDynamicPresence, TwoConsecutive0x80TransitionsToAbsentAndSetsSensorsN
 
     psu::sensors::Poller poller(
         io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
-        defs, {}, onHealth, /*initiallyPresent=*/true);
+        defs, onHealth, /*initiallyPresent=*/true);
 
     poller.start();
     EXPECT_TRUE(poller.isPresent());
@@ -703,7 +686,6 @@ TEST(PollerDynamicPresence, TwoConsecutive0x80TransitionsToAbsentAndSetsSensorsN
 
     // Sensors set to NaN, Available=false, Functional=false
     EXPECT_TRUE(std::isnan(publisher.sensors[0].value));
-    EXPECT_FALSE(publisher.sensors[0].functional);
     EXPECT_FALSE(publisher.sensors[0].available);
 
     ASSERT_FALSE(transitions.empty());
@@ -724,7 +706,7 @@ TEST(PollerDynamicPresence, 0xC0PreservesPresenceAcrossCommsFailures)
 
     psu::sensors::Poller poller(
         io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
-        defs, {}, {}, /*initiallyPresent=*/true);
+        defs, {}, /*initiallyPresent=*/true);
 
     poller.start();
     EXPECT_TRUE(poller.isPresent());
@@ -770,7 +752,7 @@ TEST(PollerDynamicPresence, BootTick1DiscoveryAndAssetRefresh)
     // Slot initializes under STATE_ABSENT upfront
     psu::sensors::Poller poller(
         io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
-        defs, {}, {}, /*initiallyPresent=*/false, /*psuAddr8=*/0xB0,
+        defs, {}, /*initiallyPresent=*/false, /*psuAddr8=*/0xB0,
         &nm, &sink);
 
     EXPECT_FALSE(poller.isPresent());
@@ -817,7 +799,7 @@ TEST(PollerDynamicPresence, BootTick1DiscoveryWithHardwareFault)
 
     psu::sensors::Poller poller(
         io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
-        defs, {}, {}, /*initiallyPresent=*/false, /*psuAddr8=*/0xB0,
+        defs, {}, /*initiallyPresent=*/false, /*psuAddr8=*/0xB0,
         &nm, &sink);
 
     poller.start();
@@ -850,7 +832,7 @@ TEST(PollerDynamicPresence, HotInsertAssetRefreshAfterUnplug)
 
     psu::sensors::Poller poller(
         io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
-        defs, {}, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB0,
+        defs, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB0,
         &nm, &sink);
 
     poller.start();
@@ -877,4 +859,109 @@ TEST(PollerDynamicPresence, HotInsertAssetRefreshAfterUnplug)
     ASSERT_EQ(nm.assetCalls.size(), 1U);
     EXPECT_EQ(nm.assetCalls[0], 0xB0);
     EXPECT_EQ(sink.updatedAssets["PSU1"].manufacturer, "ACBEL");
+}
+
+TEST(PollerAssetRefresh, RetriesEveryIntervalUntilIdentityIsRead)
+{
+    boost::asio::io_context io;
+    ScriptedReader reader;
+    reader.responses[0x20] = 0x001C;
+    reader.responses[0x79] = 0x0000;
+    reader.responses[0x88] = 0x0002;
+
+    FakeSensorPublisher publisher;
+    FakeNodeManagerClient nm; // no asset response: every read fails
+    FakeInventorySink sink;
+    std::vector<const psu::sensors::SensorDef*> defs = {sensorDef("vin")};
+
+    psu::sensors::Poller poller(
+        io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
+        defs, {}, /*initiallyPresent=*/false, /*psuAddr8=*/0xB0, &nm, &sink,
+        nullptr, std::chrono::milliseconds(1));
+
+    poller.start();
+    ASSERT_EQ(nm.assetCalls.size(), 1U);
+    EXPECT_TRUE(sink.updatedAssets.empty());
+
+    // A failed read keeps retrying on the timer, with no attempt limit.
+    io.run_for(std::chrono::milliseconds(20));
+    EXPECT_GT(nm.assetCalls.size(), 1U);
+    EXPECT_TRUE(sink.updatedAssets.empty());
+
+    nm.assetResponses[0xB0] =
+        psu::inventory::PsuAsset{"ACBEL", "R1BA2751A-P00A"};
+    io.run_for(std::chrono::milliseconds(20));
+    ASSERT_EQ(sink.updatedAssets.count("PSU1"), 1U);
+    EXPECT_EQ(sink.updatedAssets["PSU1"].manufacturer, "ACBEL");
+    EXPECT_EQ(sink.updatedAssets["PSU1"].model, "R1BA2751A-P00A");
+
+    // A successful read ends the retries.
+    const auto callsAfterSuccess = nm.assetCalls.size();
+    io.run_for(std::chrono::milliseconds(20));
+    EXPECT_EQ(nm.assetCalls.size(), callsAfterSuccess);
+}
+
+TEST(PollerAssetRefresh, RemovalStopsPendingRetries)
+{
+    boost::asio::io_context io;
+    ScriptedReader reader;
+    reader.responses[0x20] = 0x001C;
+    reader.responses[0x79] = 0x0000;
+    reader.responses[0x88] = 0x0002;
+
+    FakeSensorPublisher publisher;
+    FakeNodeManagerClient nm;
+    FakeInventorySink sink;
+    std::vector<const psu::sensors::SensorDef*> defs = {sensorDef("vin")};
+
+    psu::sensors::Poller poller(
+        io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
+        defs, {}, /*initiallyPresent=*/false, /*psuAddr8=*/0xB0, &nm, &sink,
+        nullptr, std::chrono::milliseconds(1));
+
+    poller.start();
+    io.run_for(std::chrono::milliseconds(10));
+    EXPECT_GT(nm.assetCalls.size(), 1U);
+
+    // Two consecutive 0x80 cycles remove the slot and stop the retries.
+    reader.responses[0x79] = psu::sensors::ReadOutcome::deviceTimeout;
+    poller.poll();
+    poller.poll();
+    ASSERT_FALSE(poller.isPresent());
+
+    const auto callsAtRemoval = nm.assetCalls.size();
+    io.run_for(std::chrono::milliseconds(20));
+    EXPECT_EQ(nm.assetCalls.size(), callsAtRemoval);
+}
+
+TEST(PollerAssetRefresh, RemovalRetainsLastKnownIdentity)
+{
+    boost::asio::io_context io;
+    ScriptedReader reader;
+    reader.responses[0x20] = 0x001C;
+    reader.responses[0x79] = 0x0000;
+    reader.responses[0x88] = 0x0002;
+
+    FakeSensorPublisher publisher;
+    FakeNodeManagerClient nm;
+    FakeInventorySink sink;
+    nm.assetResponses[0xB0] = psu::inventory::PsuAsset{"ACBEL", "R1BA2751A"};
+    std::vector<const psu::sensors::SensorDef*> defs = {sensorDef("vin")};
+
+    psu::sensors::Poller poller(
+        io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
+        defs, {}, /*initiallyPresent=*/false, /*psuAddr8=*/0xB0, &nm, &sink);
+
+    poller.start();
+    ASSERT_EQ(sink.updatedAssets["PSU1"].manufacturer, "ACBEL");
+
+    reader.responses[0x79] = psu::sensors::ReadOutcome::deviceTimeout;
+    poller.poll();
+    poller.poll();
+    ASSERT_FALSE(poller.isPresent());
+
+    // Removal never clears the identity: it describes the unit that was
+    // installed, and the absent profile marks it as historical.
+    EXPECT_EQ(sink.updatedAssets["PSU1"].manufacturer, "ACBEL");
+    EXPECT_EQ(sink.updatedAssets["PSU1"].model, "R1BA2751A");
 }

@@ -37,8 +37,6 @@ namespace psu::sensors
 {
 
 inline constexpr auto sensorValueInterface = "xyz.openbmc_project.Sensor.Value";
-inline constexpr auto operationalStatusInterface =
-    "xyz.openbmc_project.State.Decorator.OperationalStatus";
 inline constexpr auto availabilityInterface =
     "xyz.openbmc_project.State.Decorator.Availability";
 
@@ -95,8 +93,11 @@ class FunctionalSink
 };
 
 // Abstract sink for publishing and updating per-slot D-Bus sensor objects
-// (Sensor.Value, Availability, OperationalStatus, and Thresholds). Allows Poller
-// to be tested without a live sdbusplus::asio::object_server.
+// (Sensor.Value and Availability). Allows Poller to be tested without a live
+// sdbusplus::asio::object_server.
+//
+// Sensors carry measurements and an availability judgement only: there is no
+// sensor-level OperationalStatus and no threshold interface (spec §3.2).
 class SensorPublisher
 {
   public:
@@ -104,13 +105,11 @@ class SensorPublisher
 
     virtual void publishSensor(std::size_t index, const std::string& path,
                                const SensorDef& def, double initialValue,
-                               bool initialFunctional, bool initialAvailable,
-                               const ThresholdProperties& thresholds) = 0;
+                               bool initialAvailable) = 0;
 
     virtual void updateValue(std::size_t index, double value) = 0;
 
-    virtual void updateStatus(std::size_t index, bool functional,
-                              bool available) = 0;
+    virtual void updateAvailable(std::size_t index, bool available) = 0;
 };
 
 class DbusSensorPublisher : public SensorPublisher
@@ -123,8 +122,7 @@ class DbusSensorPublisher : public SensorPublisher
 
     void publishSensor(std::size_t index, const std::string& path,
                        const SensorDef& def, double initialValue,
-                       bool initialFunctional, bool initialAvailable,
-                       const ThresholdProperties& thresholds) override
+                       bool initialAvailable) override
     {
         if (index >= sensors.size())
         {
@@ -140,10 +138,6 @@ class DbusSensorPublisher : public SensorPublisher
         avail->register_property("Available", initialAvailable);
         avail->initialize();
 
-        auto status = server.add_interface(path, operationalStatusInterface);
-        status->register_property("Functional", initialFunctional);
-        status->initialize();
-
         if (!inventoryPath.empty())
         {
             auto assoc = server.add_interface(
@@ -155,13 +149,7 @@ class DbusSensorPublisher : public SensorPublisher
             assoc->initialize();
         }
 
-        addThresholdInterface(path, warningThresholdInterface,
-                               thresholds.warning);
-        addThresholdInterface(path, criticalThresholdInterface,
-                               thresholds.critical);
-
-        sensors[index] = Published{std::move(value), std::move(status),
-                                   std::move(avail)};
+        sensors[index] = Published{std::move(value), std::move(avail)};
     }
 
     void updateValue(std::size_t index, double value) override
@@ -172,19 +160,11 @@ class DbusSensorPublisher : public SensorPublisher
         }
     }
 
-    void updateStatus(std::size_t index, bool functional,
-                      bool available) override
+    void updateAvailable(std::size_t index, bool available) override
     {
-        if (index < sensors.size())
+        if (index < sensors.size() && sensors[index].availability)
         {
-            if (sensors[index].status)
-            {
-                sensors[index].status->set_property("Functional", functional);
-            }
-            if (sensors[index].availability)
-            {
-                sensors[index].availability->set_property("Available", available);
-            }
+            sensors[index].availability->set_property("Available", available);
         }
     }
 
@@ -192,25 +172,8 @@ class DbusSensorPublisher : public SensorPublisher
     struct Published
     {
         std::shared_ptr<sdbusplus::asio::dbus_interface> value;
-        std::shared_ptr<sdbusplus::asio::dbus_interface> status;
         std::shared_ptr<sdbusplus::asio::dbus_interface> availability;
     };
-
-    void addThresholdInterface(const std::string& path,
-                               const char* interfaceName,
-                               const std::map<std::string, double>& properties)
-    {
-        if (properties.empty())
-        {
-            return;
-        }
-        auto iface = server.add_interface(path, interfaceName);
-        for (const auto& [name, value] : properties)
-        {
-            iface->register_property(name, value);
-        }
-        iface->initialize();
-    }
 
     sdbusplus::asio::object_server& server;
     std::string inventoryPath;
@@ -237,25 +200,27 @@ class Poller
            std::uint8_t psuAddr8, std::chrono::milliseconds interval,
            std::size_t failuresBeforeNotFunctional,
            std::vector<const SensorDef*> sensorDefs,
-           std::map<std::string, Thresholds> thresholds = {},
            FunctionalSink onFunctionalChange = {},
            bool initiallyPresent = false,
            psu::discovery::NodeManagerClient* nmClient = nullptr,
            psu::discovery::InventorySink* invSink = nullptr,
-           psu::event::EventLogger* eventLogger = nullptr) :
+           psu::event::EventLogger* eventLogger = nullptr,
+           std::chrono::milliseconds assetRetryInterval =
+               std::chrono::seconds(10)) :
         ownedReader(std::make_unique<IpmbWordReader>(conn, psuAddr8)),
         ownedPublisher(std::make_unique<DbusSensorPublisher>(
             server, psu::inventory::powerSupplyPath(psuName))),
         ownedLogger(eventLogger ? nullptr
                                 : std::make_unique<psu::discovery::DbusEventLogger>(conn)),
         psuName(std::move(psuName)), psuAddr8(psuAddr8), interval(interval),
-        timer(io), sensorCount(sensorDefs.size()),
+        timer(io), assetTimer(io), sensorCount(sensorDefs.size()),
         presenceTracker(initiallyPresent),
         tracker(failuresBeforeNotFunctional),
         reader(*ownedReader), publisher(*ownedPublisher),
         logger(eventLogger ? *eventLogger : *ownedLogger),
-        cycle(reader, sensorDefs), thresholds(std::move(thresholds)),
+        cycle(reader, sensorDefs),
         onFunctionalChange(std::move(onFunctionalChange)),
+        assetRetryInterval(assetRetryInterval),
         lastPresent(initiallyPresent), lastFunctional(initiallyPresent),
         lastAvailable(initiallyPresent),
         lastProfile(initiallyPresent ? StateProfile::operational
@@ -270,22 +235,23 @@ class Poller
            std::chrono::milliseconds interval,
            std::size_t failuresBeforeNotFunctional,
            std::vector<const SensorDef*> sensorDefs,
-           std::map<std::string, Thresholds> thresholds = {},
            FunctionalSink onFunctionalChange = {},
            bool initiallyPresent = false,
            std::uint8_t psuAddr8 = 0,
            psu::discovery::NodeManagerClient* nmClient = nullptr,
            psu::discovery::InventorySink* invSink = nullptr,
-           psu::event::EventLogger* eventLogger = nullptr) :
+           psu::event::EventLogger* eventLogger = nullptr,
+           std::chrono::milliseconds assetRetryInterval =
+               std::chrono::seconds(10)) :
         psuName(std::move(psuName)), psuAddr8(psuAddr8), interval(interval),
-        timer(io), sensorCount(sensorDefs.size()),
+        timer(io), assetTimer(io), sensorCount(sensorDefs.size()),
         presenceTracker(initiallyPresent),
         tracker(failuresBeforeNotFunctional),
         reader(reader), publisher(publisher),
         logger(eventLogger ? *eventLogger : getNullLogger()),
         cycle(reader, sensorDefs),
-        thresholds(std::move(thresholds)),
         onFunctionalChange(std::move(onFunctionalChange)),
+        assetRetryInterval(assetRetryInterval),
         lastPresent(initiallyPresent), lastFunctional(initiallyPresent),
         lastAvailable(initiallyPresent),
         lastProfile(initiallyPresent ? StateProfile::operational
@@ -305,6 +271,11 @@ class Poller
             lastAvailable = false;
             lastProfile = StateProfile::absent;
             setAllSensorsNaN();
+            stopAssetRefresh();
+        }
+        else
+        {
+            beginAssetRefresh();
         }
     }
 
@@ -375,16 +346,7 @@ class Poller
         {
             const auto* def = defs[i];
             const std::string path = sensorPath(psuName, *def);
-
-            ThresholdProperties threshProps;
-            const auto it = thresholds.find(std::string(def->label));
-            if (it != thresholds.end())
-            {
-                threshProps = thresholdProperties(it->second);
-            }
-
-            publisher.publishSensor(i, path, *def, init.value, init.functional,
-                                    init.available, threshProps);
+            publisher.publishSensor(i, path, *def, init.value, init.available);
         }
     }
 
@@ -397,19 +359,68 @@ class Poller
         }
     }
 
-    void refreshAssetOnInsert()
+    // Asset identity is refreshed on insertion and then retried every
+    // assetRetryInterval for as long as the slot stays present and the
+    // manufacturer is still unknown (spec §5.6). Retries are timer-driven and
+    // unlimited; a successful read ends them until the next insertion.
+    void beginAssetRefresh()
     {
-        if (nmClient && invSink)
+        ++assetEpoch;
+        assetResolved = false;
+        assetReadInFlight = false;
+        refreshAssetIfNeeded();
+    }
+
+    void stopAssetRefresh()
+    {
+        ++assetEpoch;
+        assetReadInFlight = false;
+        assetTimer.cancel();
+    }
+
+    void refreshAssetIfNeeded()
+    {
+        if (assetResolved || assetReadInFlight || !nmClient || !invSink ||
+            !presenceTracker.isPresent())
         {
-            nmClient->readAsset(
-                psuAddr8,
-                [this](std::optional<psu::inventory::PsuAsset> asset) {
-                    if (asset && invSink)
-                    {
-                        invSink->updateAsset(psuName, *asset);
-                    }
-                });
+            return;
         }
+
+        assetReadInFlight = true;
+        const auto epoch = assetEpoch;
+        nmClient->readAsset(
+            psuAddr8,
+            [this, epoch](std::optional<psu::inventory::PsuAsset> asset) {
+                if (epoch != assetEpoch)
+                {
+                    return;
+                }
+                assetReadInFlight = false;
+                if (asset && !asset->manufacturer.empty())
+                {
+                    invSink->updateAsset(psuName, *asset);
+                    assetResolved = true;
+                    return;
+                }
+                scheduleAssetRetry();
+            });
+    }
+
+    void scheduleAssetRetry()
+    {
+        if (!presenceTracker.isPresent())
+        {
+            return;
+        }
+        const auto epoch = assetEpoch;
+        assetTimer.expires_after(assetRetryInterval);
+        assetTimer.async_wait([this, epoch](const boost::system::error_code& ec) {
+            if (ec || epoch != assetEpoch)
+            {
+                return;
+            }
+            refreshAssetIfNeeded();
+        });
     }
 
     // Commit one completed cycle: advance the differentiated dynamic presence
@@ -429,9 +440,10 @@ class Poller
                 setAllSensorsNaN();
                 for (std::size_t i = 0; i < sensorCount; ++i)
                 {
-                    publisher.updateStatus(i, false, false);
+                    publisher.updateAvailable(i, false);
                 }
                 publishFailureTransition(false, false, false);
+                stopAssetRefresh();
                 logger.logRemoved(psuName);
             }
             return;
@@ -457,7 +469,7 @@ class Poller
                 lastProfile = StateProfile::commFault;
                 for (std::size_t i = 0; i < sensorCount; ++i)
                 {
-                    publisher.updateStatus(i, false, false);
+                    publisher.updateAvailable(i, false);
                 }
                 publishFailureTransition(true, false, false);
 
@@ -493,13 +505,13 @@ class Poller
 
         for (std::size_t i = 0; i < sensorCount; ++i)
         {
-            publisher.updateStatus(i, functional, available);
+            publisher.updateAvailable(i, available);
         }
         publishFailureTransition(true, functional, available);
 
         if (wasAbsent || presenceChange == PresenceChange::inserted)
         {
-            refreshAssetOnInsert();
+            beginAssetRefresh();
             logger.logInserted(psuName);
             if (targetProfile == StateProfile::hwFault)
             {
@@ -603,6 +615,7 @@ class Poller
     std::uint8_t psuAddr8 = 0;
     std::chrono::milliseconds interval;
     boost::asio::steady_timer timer;
+    boost::asio::steady_timer assetTimer;
     std::size_t sensorCount = 0;
     int voutExponent = defaultVoutExponent;
     PresenceTracker presenceTracker;
@@ -611,8 +624,11 @@ class Poller
     SensorPublisher& publisher;
     psu::event::EventLogger& logger;
     PollCycle cycle;
-    std::map<std::string, Thresholds> thresholds;
     FunctionalSink onFunctionalChange;
+    std::chrono::milliseconds assetRetryInterval;
+    std::uint64_t assetEpoch = 0;
+    bool assetResolved = false;
+    bool assetReadInFlight = false;
     bool lastPresent = false;
     bool lastFunctional = false;
     bool lastAvailable = false;

@@ -12,7 +12,6 @@ test_exe = executable(
     'operational_state_test.cpp',
     'presence_tracker_test.cpp',
     'config_test.cpp',
-    'threshold_test.cpp',
     'slot_discovery_test.cpp',
     'event_logger_test.cpp',
     '../src/config.cpp',

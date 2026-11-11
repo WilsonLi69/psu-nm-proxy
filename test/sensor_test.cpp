@@ -134,20 +134,18 @@ TEST(SensorSet, UnknownLabelIsNotFound)
     EXPECT_EQ(psu::sensors::findSensor("nope"), nullptr);
 }
 
-TEST(SensorInitialState, PopulatedSlotInitializesWithZeroFunctionalAndAvailable)
+TEST(SensorInitialState, PopulatedSlotInitializesWithZeroAndAvailable)
 {
     const auto state = psu::sensors::initialSensorState(true);
 
     EXPECT_DOUBLE_EQ(state.value, 0.0);
-    EXPECT_TRUE(state.functional);
     EXPECT_TRUE(state.available);
 }
 
-TEST(SensorInitialState, UnpopulatedSlotInitializesWithNaNNotFunctionalAndUnavailable)
+TEST(SensorInitialState, UnpopulatedSlotInitializesWithNaNAndUnavailable)
 {
     const auto state = psu::sensors::initialSensorState(false);
 
     EXPECT_TRUE(std::isnan(state.value));
-    EXPECT_FALSE(state.functional);
     EXPECT_FALSE(state.available);
 }
