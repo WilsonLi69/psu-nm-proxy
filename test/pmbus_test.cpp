@@ -202,8 +202,25 @@ TEST(PmbusStatusWord, DecodesCombinedCriticalFaultMask0x2704)
     EXPECT_TRUE(status.vinUvFault);
     EXPECT_TRUE(status.hasCriticalFault());
     EXPECT_TRUE(psu::pmbus::hasCriticalFault(0x2704));
-    // firstCriticalFaultName returns the first asserted bit in the mask
-    EXPECT_EQ(psu::pmbus::firstCriticalFaultName(status), "TEMPERATURE_FAULT");
+    // VIN_UV_FAULT has the highest reporting precedence (spec §5.4.4).
+    EXPECT_EQ(psu::pmbus::firstCriticalFaultName(status), "VIN_UV_FAULT");
+}
+
+TEST(PmbusStatusWord, ReportsCriticalFaultsInCanonicalPrecedence)
+{
+    // VIN_UV_FAULT wins over every other critical bit.
+    EXPECT_EQ(psu::pmbus::criticalFaultName(0x2000 | 0x0004), "VIN_UV_FAULT");
+    EXPECT_EQ(psu::pmbus::criticalFaultName(0x2000 | 0x0100), "VIN_UV_FAULT");
+    EXPECT_EQ(psu::pmbus::criticalFaultName(0x2000 | 0x0200), "VIN_UV_FAULT");
+    EXPECT_EQ(psu::pmbus::criticalFaultName(0x2000 | 0x0400), "VIN_UV_FAULT");
+
+    // Then VOUT_OV_FAULT, IOUT_OC_FAULT, TEMPERATURE_FAULT, FAN_FAULT.
+    EXPECT_EQ(psu::pmbus::criticalFaultName(0x0100 | 0x0200), "VOUT_OV_FAULT");
+    EXPECT_EQ(psu::pmbus::criticalFaultName(0x0100 | 0x0004), "VOUT_OV_FAULT");
+    EXPECT_EQ(psu::pmbus::criticalFaultName(0x0200 | 0x0004), "IOUT_OC_FAULT");
+    EXPECT_EQ(psu::pmbus::criticalFaultName(0x0200 | 0x0400), "IOUT_OC_FAULT");
+    EXPECT_EQ(psu::pmbus::criticalFaultName(0x0004 | 0x0400),
+              "TEMPERATURE_FAULT");
 }
 
 TEST(PmbusStatusWord, IgnoresCmlAndWarningBitsInCriticalFaultEvaluation)

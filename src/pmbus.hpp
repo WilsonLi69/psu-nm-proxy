@@ -160,11 +160,15 @@ inline bool hasCriticalFault(const StatusWord& status)
     return status.hasCriticalFault();
 }
 
+// Reporting precedence when several critical bits are asserted (spec §5.4.4):
+// VIN_UV_FAULT -> VOUT_OV_FAULT -> IOUT_OC_FAULT -> TEMPERATURE_FAULT ->
+// FAN_FAULT. The chosen name also decides whether the event layer reports
+// input-power loss rather than a generic hardware failure.
 inline std::string_view criticalFaultName(const StatusWord& status)
 {
-    if (status.temperatureFault)
+    if (status.vinUvFault)
     {
-        return "TEMPERATURE_FAULT";
+        return "VIN_UV_FAULT";
     }
     if (status.voutOvFault)
     {
@@ -174,13 +178,13 @@ inline std::string_view criticalFaultName(const StatusWord& status)
     {
         return "IOUT_OC_FAULT";
     }
+    if (status.temperatureFault)
+    {
+        return "TEMPERATURE_FAULT";
+    }
     if (status.fanFault)
     {
         return "FAN_FAULT";
-    }
-    if (status.vinUvFault)
-    {
-        return "VIN_UV_FAULT";
     }
     return {};
 }

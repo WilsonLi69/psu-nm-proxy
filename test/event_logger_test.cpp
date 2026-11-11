@@ -6,6 +6,7 @@
 
 #include <boost/asio/io_context.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <map>
@@ -104,11 +105,13 @@ class ScriptedReader : public psu::sensors::WordReader
     void read(std::uint8_t command,
               std::function<void(psu::sensors::WordResult)> callback) override
     {
+        calls.push_back(command);
         const auto it = responses.find(command);
         callback(it == responses.end() ? std::nullopt : it->second);
     }
 
     std::map<std::uint8_t, psu::sensors::WordResult> responses;
+    std::vector<std::uint8_t> calls;
 };
 
 class DummyPublisher : public psu::sensors::SensorPublisher
@@ -654,4 +657,36 @@ TEST(EventLoggerTransitions, RoutinePowerTransitionsAndWarningsDoNotEmitEventLog
     poller.poll();
     EXPECT_EQ(poller.getProfile(), psu::sensors::StateProfile::operational);
     EXPECT_TRUE(logger.events.empty());
+}
+
+// The daemon observes faults; it must never mutate the supply's fault state.
+// A full poll cycle (clean, faulted, standby) issues no CLEAR_FAULTS (0x03).
+TEST(EventLoggerTransitions, PollCyclesNeverIssueClearFaults)
+{
+    boost::asio::io_context io;
+    ScriptedReader reader;
+    reader.responses[0x20] = 0x001C; // VOUT_MODE
+    reader.responses[0x79] = 0x0000; // clean STATUS_WORD
+    reader.responses[0x88] = 0x0002; // vin
+
+    DummyPublisher publisher;
+    FakeEventLogger logger;
+    std::vector<const psu::sensors::SensorDef*> defs = {sensorDef("vin")};
+
+    psu::sensors::Poller poller(
+        io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
+        defs, {}, {}, /*initiallyPresent=*/false, /*psuAddr8=*/0xB0,
+        nullptr, nullptr, &logger);
+
+    poller.start();
+    poller.poll();
+
+    reader.responses[0x79] = 0x2000; // VIN_UV_FAULT
+    poller.poll();
+
+    reader.responses[0x79] = 0x0840; // S5 standby
+    poller.poll();
+
+    ASSERT_FALSE(reader.calls.empty());
+    EXPECT_EQ(std::count(reader.calls.begin(), reader.calls.end(), 0x03), 0);
 }
