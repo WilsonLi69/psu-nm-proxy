@@ -25,7 +25,9 @@ jobs:
       - name: Build and install sdbusplus
         run: |
           git clone https://github.com/openbmc/sdbusplus /tmp/sdbusplus
-          git -C /tmp/sdbusplus checkout e053146c71db0b460ba778a6711f1f2e48537a54
+          # Track the revision the image ships
+          # (meta-phosphor/recipes-extended/sdbusplus/sdbusplus-rev.inc).
+          git -C /tmp/sdbusplus checkout 94beff8b037dc80f4df0e24af70c9a2f44a52b47
           meson setup /tmp/sdbusplus/build /tmp/sdbusplus \
             --prefix=/usr/local \
             -Dtests=disabled -Dexamples=disabled
