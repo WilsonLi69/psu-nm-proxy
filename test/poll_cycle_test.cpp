@@ -249,6 +249,53 @@ TEST(PollCycle, ShortCircuitsOn0xC0NodeBusy)
     EXPECT_EQ(reader.calls, (std::vector<std::uint8_t>{0x79}));
 }
 
+TEST(PollCycle, ShortCircuitsOnUnknownCompletionCodeAndKeepsTheCode)
+{
+    ScriptedReader reader;
+    reader.responses[0x79] =
+        psu::sensors::WordResult::fromCompletionCode(0x02);
+    reader.responses[0x88] = 0x0001; // vin
+
+    std::vector<const psu::sensors::SensorDef*> defs = {sensorDef("vin"),
+                                                        sensorDef("vout")};
+    psu::sensors::PollCycle cycle(reader, defs);
+
+    std::optional<psu::sensors::CycleResult> result;
+    cycle.run(-4, {}, [&result](psu::sensors::CycleResult r) {
+        result = std::move(r);
+    });
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->readsSucceeded);
+    // The ME returned a specific code: it is not reported as a transport error.
+    EXPECT_EQ(result->outcome,
+              psu::sensors::ReadOutcome::unknownCompletionCode);
+    ASSERT_TRUE(result->completionCode.has_value());
+    EXPECT_EQ(*result->completionCode, 0x02);
+    EXPECT_FALSE(result->status.has_value());
+    // Short-circuited: only STATUS_WORD (0x79) was called
+    EXPECT_EQ(reader.calls, (std::vector<std::uint8_t>{0x79}));
+}
+
+TEST(PollCycle, TransportFailureCarriesNoCompletionCode)
+{
+    ScriptedReader reader;
+    reader.responses[0x79] = psu::sensors::ReadOutcome::transportError;
+
+    std::vector<const psu::sensors::SensorDef*> defs = {sensorDef("vin")};
+    psu::sensors::PollCycle cycle(reader, defs);
+
+    std::optional<psu::sensors::CycleResult> result;
+    cycle.run(-4, {}, [&result](psu::sensors::CycleResult r) {
+        result = std::move(r);
+    });
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->readsSucceeded);
+    EXPECT_EQ(result->outcome, psu::sensors::ReadOutcome::transportError);
+    EXPECT_FALSE(result->completionCode.has_value());
+}
+
 TEST(PollCycle, DecodesEverySensorAndStatus)
 {
     ScriptedReader reader;
@@ -732,6 +779,70 @@ TEST(PollerDynamicPresence, 0xC0PreservesPresenceAcrossCommsFailures)
     EXPECT_EQ(poller.getProfile(), psu::sensors::StateProfile::commFault);
     // Sensor values are NOT set to NaN on comm fault (retains last known value)
     EXPECT_DOUBLE_EQ(publisher.sensors[0].value, 2.0);
+}
+
+TEST(PollerDynamicPresence, SingleUnknownCompletionCodeLeavesOperationalSlotUnchanged)
+{
+    boost::asio::io_context io;
+    ScriptedReader reader;
+    reader.responses[0x20] = 0x001C;
+    reader.responses[0x79] = 0x0000;
+    reader.responses[0x88] = 0x0002;
+
+    FakeSensorPublisher publisher;
+    std::vector<const psu::sensors::SensorDef*> defs = {sensorDef("vin")};
+
+    psu::sensors::Poller poller(
+        io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
+        defs, {}, /*initiallyPresent=*/true);
+
+    poller.start();
+    EXPECT_EQ(poller.getProfile(), psu::sensors::StateProfile::operational);
+
+    // The ME returns a specific non-success code the daemon does not recognize.
+    reader.responses[0x79] = psu::sensors::WordResult::fromCompletionCode(0x02);
+    poller.poll();
+
+    // One transient code changes nothing: still present, functional, available.
+    EXPECT_TRUE(poller.isPresent());
+    EXPECT_TRUE(poller.isFunctional());
+    EXPECT_TRUE(poller.isAvailable());
+    EXPECT_EQ(poller.getProfile(), psu::sensors::StateProfile::operational);
+    EXPECT_DOUBLE_EQ(publisher.sensors[0].value, 2.0);
+}
+
+TEST(PollerDynamicPresence, UnknownCompletionCodesCountTowardCommsFailureWithoutClearingPresence)
+{
+    boost::asio::io_context io;
+    ScriptedReader reader;
+    reader.responses[0x20] = 0x001C;
+    reader.responses[0x79] = 0x0000;
+    reader.responses[0x88] = 0x0002;
+
+    FakeSensorPublisher publisher;
+    std::vector<const psu::sensors::SensorDef*> defs = {sensorDef("vin")};
+
+    psu::sensors::Poller poller(
+        io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
+        defs, {}, /*initiallyPresent=*/true);
+
+    poller.start();
+    ASSERT_TRUE(poller.isPresent());
+
+    reader.responses[0x79] = psu::sensors::WordResult::fromCompletionCode(0x02);
+
+    // Two unrecognized codes stay within the transient tolerance.
+    poller.poll();
+    poller.poll();
+    EXPECT_TRUE(poller.isFunctional());
+    EXPECT_EQ(poller.getProfile(), psu::sensors::StateProfile::operational);
+
+    // The third consecutive unrecognized code reaches the threshold.
+    poller.poll();
+    EXPECT_TRUE(poller.isPresent()); // only 0x80 can clear Present
+    EXPECT_FALSE(poller.isFunctional());
+    EXPECT_FALSE(poller.isAvailable());
+    EXPECT_EQ(poller.getProfile(), psu::sensors::StateProfile::commFault);
 }
 
 TEST(PollerDynamicPresence, BootTick1DiscoveryAndAssetRefresh)

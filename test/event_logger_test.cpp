@@ -370,6 +370,44 @@ TEST(EventLoggerTransitions, CommsFailure0xC0EmitsPowerSupplyFailedWarning)
     EXPECT_EQ(logger.events.size(), 1U);
 }
 
+// AC5: An unrecognized non-success completion code is reported as that code,
+// not as a transport error: PowerSupplyFailed (Warning) with IPMB_CC=0x02.
+TEST(EventLoggerTransitions, UnknownCompletionCodeEmitsPowerSupplyFailedWithThatCode)
+{
+    boost::asio::io_context io;
+    ScriptedReader reader;
+    reader.responses[0x20] = 0x001C;
+    reader.responses[0x79] = 0x0000;
+    reader.responses[0x88] = 0x0002;
+
+    DummyPublisher publisher;
+    FakeEventLogger logger;
+    std::vector<const psu::sensors::SensorDef*> defs = {sensorDef("vin")};
+
+    psu::sensors::Poller poller(
+        io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
+        defs, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB0,
+        nullptr, nullptr, &logger);
+
+    poller.start();
+    logger.events.clear();
+
+    // 0x02 is not a code the daemon gives special meaning to.
+    reader.responses[0x79] = psu::sensors::WordResult::fromCompletionCode(0x02);
+
+    poller.poll();
+    poller.poll();
+    EXPECT_TRUE(logger.events.empty());
+
+    poller.poll();
+    EXPECT_EQ(poller.getProfile(), psu::sensors::StateProfile::commFault);
+    ASSERT_EQ(logger.events.size(), 1U);
+    EXPECT_EQ(logger.events[0].message, psu::event::powerSupplyFailedMessage);
+    EXPECT_EQ(logger.events[0].severity, psu::event::severityWarning);
+    EXPECT_EQ(logger.events[0].metadata.at("PSU"), "PSU1");
+    EXPECT_EQ(logger.events[0].metadata.at("IPMB_CC"), "0x02");
+}
+
 // AC5: Transitioning to STATE_COMM_FAULT due to transport timeouts
 // emits PowerSupplyFailed with IPMB_CC=TRANSPORT_TIMEOUT
 TEST(EventLoggerTransitions, TransportTimeoutEmitsPowerSupplyFailedWithTransportTimeout)

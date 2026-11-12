@@ -424,8 +424,9 @@ class Poller
     }
 
     // Commit one completed cycle: advance the differentiated dynamic presence
-    // tracker (0x80) and consecutive-failure tracker (0xC0/transport stalls),
-    // updating Present/Functional/Available across sensor and inventory objects (spec §5.7).
+    // tracker (0x80) and consecutive-failure tracker (0xC0, other returned
+    // codes, transport stalls), updating Present/Functional/Available across
+    // sensor and inventory objects (spec §5.7).
     void applyCycle(const CycleResult& result)
     {
         const auto presenceChange = presenceTracker.record(result.outcome);
@@ -449,11 +450,11 @@ class Poller
             return;
         }
 
-        if (result.outcome == ReadOutcome::nodeBusy ||
-            result.outcome == ReadOutcome::transportError)
+        // Every other failed cycle — 0xC0 (Node Busy), any other non-success
+        // completion code the ME/PSU returned, or an IPMB transport error —
+        // keeps Present and counts toward communication health (spec §5.2.3).
+        if (result.outcome != ReadOutcome::success)
         {
-            // 0xC0 (Node Busy) and IPMB transport errors never modify Present;
-            // they only increment FailureTracker toward failuresBeforeNotFunctional.
             tracker.recordFailure();
 
             if (!presenceTracker.isPresent())
@@ -475,12 +476,11 @@ class Poller
 
                 if (transitioningToCommFault)
                 {
-                    std::optional<std::uint8_t> cc = std::nullopt;
-                    if (result.outcome == ReadOutcome::nodeBusy)
-                    {
-                        cc = 0xC0;
-                    }
-                    logger.logCommunicationLoss(psuName, cc);
+                    // The record carries the code the ME/PSU actually
+                    // returned; a failed call with no code renders as
+                    // IPMB_CC=TRANSPORT_TIMEOUT (spec §5.7.3).
+                    logger.logCommunicationLoss(psuName,
+                                                result.completionCode);
                 }
             }
             return;

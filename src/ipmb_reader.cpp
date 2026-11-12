@@ -26,24 +26,23 @@ void IpmbWordReader::read(std::uint8_t command,
         [callback = std::move(callback)](psu::ipmb::RawPmbusOutcome outcome) {
             if (!outcome.transportOk)
             {
+                // The D-Bus/IPMB call failed, so there is no completion code
+                // to report.
                 callback(WordResult(ReadOutcome::transportError));
                 return;
             }
 
-            if (outcome.completionCode == psu::ipmb::ccDeviceTimeout)
+            // Any returned non-success code travels with the result, so a
+            // communication-fault record reports the code the ME sent rather
+            // than a generic transport error (spec §5.7.3).
+            if (outcome.completionCode != psu::ipmb::ccSuccess)
             {
-                callback(WordResult(ReadOutcome::deviceTimeout));
+                callback(
+                    WordResult::fromCompletionCode(outcome.completionCode));
                 return;
             }
 
-            if (outcome.completionCode == psu::ipmb::ccNodeBusy)
-            {
-                callback(WordResult(ReadOutcome::nodeBusy));
-                return;
-            }
-
-            if (outcome.completionCode != psu::ipmb::ccSuccess ||
-                !outcome.payload)
+            if (!outcome.payload)
             {
                 callback(WordResult(ReadOutcome::transportError));
                 return;

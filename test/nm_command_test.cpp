@@ -271,6 +271,45 @@ TEST(IpmbNormalizeCc, PreservesOtherCompletionCodes)
     EXPECT_EQ(psu::ipmb::normalizeCompletionCode(0x00, response), 0x00);
 }
 
+TEST(WordResult, CarriesTheCompletionCodeThatWasReturned)
+{
+    using psu::sensors::ReadOutcome;
+    using psu::sensors::WordResult;
+
+    // 0x80 and 0xC0 are codes in their own right: the outcome names them and
+    // the result still exposes the raw code for the event record.
+    const WordResult timeout(ReadOutcome::deviceTimeout);
+    ASSERT_TRUE(timeout.completionCode.has_value());
+    EXPECT_EQ(*timeout.completionCode, 0x80);
+
+    const WordResult busy(ReadOutcome::nodeBusy);
+    ASSERT_TRUE(busy.completionCode.has_value());
+    EXPECT_EQ(*busy.completionCode, 0xC0);
+
+    // Any other non-success code is surfaced as itself, not as a transport error.
+    const WordResult unknown = WordResult::fromCompletionCode(0x02);
+    EXPECT_EQ(unknown.outcome, ReadOutcome::unknownCompletionCode);
+    ASSERT_TRUE(unknown.completionCode.has_value());
+    EXPECT_EQ(*unknown.completionCode, 0x02);
+    EXPECT_FALSE(unknown.has_value());
+
+    // The classification the IPMB reader applies to a returned code.
+    const WordResult fromTimeout = WordResult::fromCompletionCode(0x80);
+    EXPECT_EQ(fromTimeout.outcome, ReadOutcome::deviceTimeout);
+    ASSERT_TRUE(fromTimeout.completionCode.has_value());
+    EXPECT_EQ(*fromTimeout.completionCode, 0x80);
+
+    const WordResult fromBusy = WordResult::fromCompletionCode(0xC0);
+    EXPECT_EQ(fromBusy.outcome, ReadOutcome::nodeBusy);
+    ASSERT_TRUE(fromBusy.completionCode.has_value());
+    EXPECT_EQ(*fromBusy.completionCode, 0xC0);
+
+    // A failed D-Bus/IPMB call carries no code at all.
+    const WordResult transport(ReadOutcome::transportError);
+    EXPECT_EQ(transport.outcome, ReadOutcome::transportError);
+    EXPECT_FALSE(transport.completionCode.has_value());
+}
+
 TEST(WordResult, EvaluatesCorrectly)
 {
     using psu::sensors::ReadOutcome;

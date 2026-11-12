@@ -20,6 +20,9 @@ struct CycleResult
 {
     // Typed outcome of the STATUS_WORD read (or cycle outcome).
     ReadOutcome outcome = ReadOutcome::success;
+    // Completion code returned by the ME/PSU for that read, or std::nullopt
+    // when the D-Bus/IPMB call itself failed (spec §5.7.3).
+    std::optional<std::uint8_t> completionCode = std::nullopt;
     // One decoded value per sensor, std::nullopt where that read failed.
     std::vector<std::optional<double>> values;
     // Decoded STATUS_WORD, or std::nullopt when that read failed.
@@ -29,9 +32,9 @@ struct CycleResult
 };
 
 // Drives one full read cycle asynchronously: STATUS_WORD (0x79) is read first.
-// If 0x80 (DeviceTimeout) or 0xC0 (NodeBusy) is returned, the remaining telemetry
-// reads for that cycle are short-circuited (spec §5.3). Otherwise, each selected
-// sensor is read in turn.
+// If that read fails (0x80, 0xC0, any other returned non-success completion
+// code, or a transport error), the remaining telemetry reads for that cycle are
+// short-circuited (spec §5.3). Otherwise, each selected sensor is read in turn.
 //
 // It never blocks: run() returns immediately and the completion callback fires
 // on the io_context thread once the whole cycle has finished.
@@ -60,18 +63,12 @@ class PollCycle
     {
         reader.read(statusWordCommand, [this](WordResult word) {
             result.outcome = word.outcome;
+            result.completionCode = word.completionCode;
 
-            // Short-circuit remaining telemetry reads on SMLink device timeout (0x80)
-            // or ME node busy (0xC0).
-            if (word.outcome == ReadOutcome::deviceTimeout ||
-                word.outcome == ReadOutcome::nodeBusy)
-            {
-                result.readsSucceeded = false;
-                auto done = std::move(this->done);
-                done(std::move(result));
-                return;
-            }
-
+            // Any failed STATUS_WORD read short-circuits the rest of the
+            // cycle: there is no point reading telemetry from a PSU the ME
+            // could not reach or that answered with a non-success code
+            // (spec §5.3).
             if (word.outcome != ReadOutcome::success || !word.has_value())
             {
                 result.readsSucceeded = false;

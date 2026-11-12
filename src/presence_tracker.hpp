@@ -16,12 +16,13 @@ enum class PresenceChange
 
 // Tracks dynamic PSU presence over the Intel ME D9h proxy (spec §2.2/§5.3).
 //
-// Differentiates 0x80 (SMLink Device Timeout) from 0xC0 (ME Node Busy) and
-// transport errors:
+// Differentiates 0x80 (SMLink Device Timeout) from 0xC0 (ME Node Busy),
+// transport errors, and any other completion code the ME or PSU returns:
 // - Two consecutive 0x80 cycles transition a present slot to absent (Present = false).
 // - Single 0x80 is debounced (Present remains true).
-// - 0xC0 (Node Busy) and IPMB transport errors preserve the current Present state,
-//   counting only toward BMC<->ME communication health tracking.
+// - 0xC0 (Node Busy), any other returned non-success code, and IPMB transport
+//   errors preserve the current Present state, counting only toward BMC<->ME
+//   communication health tracking.
 // - A 0x00 (Success) cycle restores presence (Present = true) immediately.
 class PresenceTracker
 {
@@ -56,9 +57,10 @@ class PresenceTracker
             return PresenceChange::none;
         }
 
-        // On NodeBusy (0xC0) or TransportError:
-        // Preserves Present state without penalty. Resets consecutive 0x80 counter
-        // because SMLink timeout streak was interrupted.
+        // On NodeBusy (0xC0), any other returned non-success code, or
+        // TransportError: preserves Present state without penalty. Resets the
+        // consecutive 0x80 counter because the SMLink timeout streak was
+        // interrupted.
         consecutive0x80 = 0;
         return PresenceChange::none;
     }
