@@ -9,6 +9,7 @@ test_exe = executable(
     'inventory_test.cpp',
     'poll_cycle_test.cpp',
     'failure_tracker_test.cpp',
+    'fault_episode_test.cpp',
     'operational_state_test.cpp',
     'presence_tracker_test.cpp',
     'config_test.cpp',

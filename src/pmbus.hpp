@@ -160,6 +160,17 @@ inline bool hasCriticalFault(const StatusWord& status)
     return status.hasCriticalFault();
 }
 
+// The critical fault that classifies an episode as loss of AC input; an
+// episode opened by it recovers with PowerSupplyPowerRestored rather than
+// PowerSupplyRecovered (spec §5.7.2).
+inline constexpr std::string_view inputPowerLossFault = "VIN_UV_FAULT";
+
+// Whether a reported critical fault name is loss of AC input.
+inline bool isInputPowerLoss(std::string_view faultName)
+{
+    return faultName == inputPowerLossFault;
+}
+
 // Reporting precedence when several critical bits are asserted (spec §5.4.4):
 // VIN_UV_FAULT -> VOUT_OV_FAULT -> IOUT_OC_FAULT -> TEMPERATURE_FAULT ->
 // FAN_FAULT. The chosen name also decides whether the event layer reports
@@ -168,7 +179,7 @@ inline std::string_view criticalFaultName(const StatusWord& status)
 {
     if (status.vinUvFault)
     {
-        return "VIN_UV_FAULT";
+        return inputPowerLossFault;
     }
     if (status.voutOvFault)
     {

@@ -84,8 +84,7 @@ class FakeEventLogger : public psu::event::EventLogger
         char buf[16];
         std::snprintf(buf, sizeof(buf), "0x%04X", statusWord);
 
-        const bool inputPowerLoss =
-            faultName == psu::event::inputPowerLossFault;
+        const bool inputPowerLoss = psu::pmbus::isInputPowerLoss(faultName);
         std::string resolution = "Power supply " + psuName + " reported " +
                                  std::string(faultName) + ". ";
         resolution += inputPowerLoss
@@ -576,11 +575,9 @@ TEST(EventLoggerTransitions, CleanPollRecoversFromHardwareFault)
     EXPECT_EQ(logger.events[0].metadata.at("PSU"), "PSU1");
 }
 
-// AC8: Transitioning from STATE_COMM_FAULT to STATE_HW_FAULT on resumed communication with critical fault
-// emits exact sequential order:
-//   1. OpenBMC.0.1.PowerSupplyRecovered (Informational)
-//   2. OpenBMC.0.1.PowerSupplyFailed (Critical) with metadata
-TEST(EventLoggerTransitions, ResumedCommsWithHardwareFaultEmitsRecoveryThenFailure)
+// Leaving STATE_COMM_FAULT into STATE_HW_FAULT while no episode is open starts
+// one: a single fault record, and no communication-recovery record.
+TEST(EventLoggerTransitions, ResumedCommsIntoNewHardwareFaultEmitsOnlyTheFaultRecord)
 {
     boost::asio::io_context io;
     ScriptedReader reader;
@@ -600,36 +597,31 @@ TEST(EventLoggerTransitions, ResumedCommsWithHardwareFaultEmitsRecoveryThenFailu
     poller.start();
     logger.events.clear();
 
-    // Enter STATE_COMM_FAULT
+    // Enter STATE_COMM_FAULT while the supply is fault-free: no episode is open.
     reader.responses[0x79] = psu::sensors::ReadOutcome::nodeBusy;
     poller.poll();
     EXPECT_EQ(poller.getProfile(), psu::sensors::StateProfile::commFault);
     ASSERT_EQ(logger.events.size(), 1U);
     logger.events.clear();
 
-    // Resumed comms (0x00) with critical TEMPERATURE_FAULT (0x0004)
+    // Resumed comms (0x00) with critical TEMPERATURE_FAULT (0x0004): the
+    // episode opens, and the communication loss is not separately reported.
     reader.responses[0x79] = 0x0004;
     poller.poll();
     EXPECT_EQ(poller.getProfile(), psu::sensors::StateProfile::hwFault);
-    ASSERT_EQ(logger.events.size(), 2U);
+    ASSERT_EQ(logger.events.size(), 1U);
 
-    // 1. PowerSupplyRecovered (Informational) closing comms fault
-    EXPECT_EQ(logger.events[0].message, psu::event::powerSupplyRecoveredMessage);
-    EXPECT_EQ(logger.events[0].severity, psu::event::severityInformational);
+    EXPECT_EQ(logger.events[0].message, psu::event::powerSupplyFailedMessage);
+    EXPECT_EQ(logger.events[0].severity, psu::event::severityCritical);
     EXPECT_EQ(logger.events[0].metadata.at("PSU"), "PSU1");
-
-    // 2. PowerSupplyFailed (Critical) asserting hardware fault
-    EXPECT_EQ(logger.events[1].message, psu::event::powerSupplyFailedMessage);
-    EXPECT_EQ(logger.events[1].severity, psu::event::severityCritical);
-    EXPECT_EQ(logger.events[1].metadata.at("PSU"), "PSU1");
-    EXPECT_EQ(logger.events[1].metadata.at("ERROR"), "TEMPERATURE_FAULT");
-    EXPECT_EQ(logger.events[1].metadata.at("STATUS_WORD"), "0x0004");
+    EXPECT_EQ(logger.events[0].metadata.at("ERROR"), "TEMPERATURE_FAULT");
+    EXPECT_EQ(logger.events[0].metadata.at("STATUS_WORD"), "0x0004");
 }
 
-// Edge case caveat: Severity Downgrade (STATE_HW_FAULT -> STATE_COMM_FAULT)
-// Table 3.4.3: Hardware-faulted PSU experiences 3 consecutive comms failures emits PowerSupplyFailed (Warning).
-// When comms recovers with unresolved HW fault, re-emits PowerSupplyRecovered and PowerSupplyFailed (Critical).
-TEST(EventLoggerTransitions, SeverityDowngradeAndReassertion)
+// A fault episode stays open across an intervening communication fault: when
+// communication returns with the same fault still asserted, nothing is
+// announced (spec §5.7.1 rule 2).
+TEST(EventLoggerTransitions, CommsInterruptionWhileFaultedEmitsNothingOnResume)
 {
     boost::asio::io_context io;
     ScriptedReader reader;
@@ -664,17 +656,150 @@ TEST(EventLoggerTransitions, SeverityDowngradeAndReassertion)
     EXPECT_EQ(logger.events[0].metadata.count("ERROR"), 0U);
     logger.events.clear();
 
-    // Comms recovers with unresolved FAN_FAULT -> re-emits Recovery (Info) and Failure (Critical)
+    // Comms recovers with the same FAN_FAULT still asserted: the episode never
+    // closed, so neither a recovery nor a second fault record is emitted.
     reader.responses[0x79] = 0x0400;
     poller.poll();
     EXPECT_EQ(poller.getProfile(), psu::sensors::StateProfile::hwFault);
+    EXPECT_TRUE(logger.events.empty());
+}
+
+// One fault record per episode, however long the fault persists.
+TEST(EventLoggerTransitions, FaultSpanningManyCyclesEmitsExactlyOneRecord)
+{
+    boost::asio::io_context io;
+    ScriptedReader reader;
+    reader.responses[0x20] = 0x001C;
+    reader.responses[0x79] = 0x0000;
+    reader.responses[0x88] = 0x0002;
+
+    DummyPublisher publisher;
+    FakeEventLogger logger;
+    std::vector<const psu::sensors::SensorDef*> defs = {sensorDef("vin")};
+
+    psu::sensors::Poller poller(
+        io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
+        defs, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB0,
+        nullptr, nullptr, &logger);
+
+    poller.start();
+    logger.events.clear();
+
+    reader.responses[0x79] = 0x0400; // FAN_FAULT
+    for (int cycle = 0; cycle < 6; ++cycle)
+    {
+        poller.poll();
+    }
+
+    ASSERT_EQ(logger.events.size(), 1U);
+    EXPECT_EQ(logger.events[0].metadata.at("ERROR"), "FAN_FAULT");
+}
+
+// The asserted bit set changing inside an open episode announces nothing.
+TEST(EventLoggerTransitions, ChangingAssertedBitsWhileOpenEmitsNothing)
+{
+    boost::asio::io_context io;
+    ScriptedReader reader;
+    reader.responses[0x20] = 0x001C;
+    reader.responses[0x79] = 0x0400; // FAN_FAULT opens the episode
+    reader.responses[0x88] = 0x0002;
+
+    DummyPublisher publisher;
+    FakeEventLogger logger;
+    std::vector<const psu::sensors::SensorDef*> defs = {sensorDef("vin")};
+
+    psu::sensors::Poller poller(
+        io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
+        defs, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB0,
+        nullptr, nullptr, &logger);
+
+    poller.start();
+    ASSERT_EQ(logger.events.size(), 1U);
+    logger.events.clear();
+
+    reader.responses[0x79] = 0x0600; // FAN_FAULT + IOUT_OC_FAULT
+    poller.poll();
+    reader.responses[0x79] = 0x0200; // FAN_FAULT cleared, IOUT_OC_FAULT stays
+    poller.poll();
+    reader.responses[0x79] = 0x2000; // VIN_UV_FAULT appears instead
+    poller.poll();
+
+    EXPECT_EQ(poller.getProfile(), psu::sensors::StateProfile::hwFault);
+    EXPECT_TRUE(logger.events.empty());
+}
+
+// Removal terminates an open episode silently: the removal record is its
+// terminator, not a recovery.
+TEST(EventLoggerTransitions, RemovalWhileFaultedEmitsRemovedWithoutRecovery)
+{
+    boost::asio::io_context io;
+    ScriptedReader reader;
+    reader.responses[0x20] = 0x001C;
+    reader.responses[0x79] = 0x0400; // FAN_FAULT
+    reader.responses[0x88] = 0x0002;
+
+    DummyPublisher publisher;
+    FakeEventLogger logger;
+    std::vector<const psu::sensors::SensorDef*> defs = {sensorDef("vin")};
+
+    psu::sensors::Poller poller(
+        io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
+        defs, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB0,
+        nullptr, nullptr, &logger);
+
+    poller.start();
+    ASSERT_EQ(logger.events.size(), 1U);
+    logger.events.clear();
+
+    // 2 consecutive 0x80 cycles remove the slot while the episode is open.
+    reader.responses[0x79] = psu::sensors::ReadOutcome::deviceTimeout;
+    poller.poll();
+    poller.poll();
+    ASSERT_FALSE(poller.isPresent());
+
+    ASSERT_EQ(logger.events.size(), 1U);
+    EXPECT_EQ(logger.events[0].message, psu::event::powerSupplyRemovedMessage);
+    EXPECT_EQ(logger.events[0].severity, psu::event::severityWarning);
+}
+
+// A re-inserted unit that is still faulty announces insertion and opens a new
+// episode, because removal re-armed the latch.
+TEST(EventLoggerTransitions, ReinsertingAStillFaultyUnitEmitsInsertedAndANewFault)
+{
+    boost::asio::io_context io;
+    ScriptedReader reader;
+    reader.responses[0x20] = 0x001C;
+    reader.responses[0x79] = 0x0400; // FAN_FAULT
+    reader.responses[0x88] = 0x0002;
+
+    DummyPublisher publisher;
+    FakeEventLogger logger;
+    std::vector<const psu::sensors::SensorDef*> defs = {sensorDef("vin")};
+
+    psu::sensors::Poller poller(
+        io, reader, publisher, "PSU1", std::chrono::milliseconds(1000), 3,
+        defs, {}, /*initiallyPresent=*/true, /*psuAddr8=*/0xB0,
+        nullptr, nullptr, &logger);
+
+    poller.start();
+    reader.responses[0x79] = psu::sensors::ReadOutcome::deviceTimeout;
+    poller.poll();
+    poller.poll();
+    ASSERT_FALSE(poller.isPresent());
+    logger.events.clear();
+
+    // The same unit returns, still reporting FAN_FAULT.
+    reader.responses[0x79] = 0x0400;
+    poller.poll();
+
+    EXPECT_TRUE(poller.isPresent());
+    EXPECT_EQ(poller.getProfile(), psu::sensors::StateProfile::hwFault);
     ASSERT_EQ(logger.events.size(), 2U);
-    EXPECT_EQ(logger.events[0].message, psu::event::powerSupplyRecoveredMessage);
+    EXPECT_EQ(logger.events[0].message, psu::event::powerSupplyInsertedMessage);
     EXPECT_EQ(logger.events[0].severity, psu::event::severityInformational);
     EXPECT_EQ(logger.events[1].message, psu::event::powerSupplyFailedMessage);
     EXPECT_EQ(logger.events[1].severity, psu::event::severityCritical);
     EXPECT_EQ(logger.events[1].metadata.at("ERROR"), "FAN_FAULT");
-    EXPECT_EQ(logger.events[1].metadata.at("STATUS_WORD"), "0x0400");
 }
 
 // AC9: Routine host S0/S5 power transitions and CML/Warning bits do not emit event logs
@@ -817,6 +942,10 @@ TEST(EventLoggerTransitions, InputPowerLossRecoveryEmitsPowerRestored)
     EXPECT_EQ(logger.events[1].message,
               psu::event::powerSupplyPowerRestoredMessage);
     EXPECT_EQ(logger.events[1].severity, psu::event::severityInformational);
+
+    // The episode closed; further fault-free cycles are silent.
+    poller.poll();
+    EXPECT_EQ(logger.events.size(), 2U);
 }
 
 TEST(EventLoggerTransitions, NonInputFaultRecoveryEmitsPowerSupplyRecovered)

@@ -3,6 +3,7 @@
 #include "dbus_adapters.hpp"
 #include "event_logger.hpp"
 #include "failure_tracker.hpp"
+#include "fault_episode.hpp"
 #include "inventory.hpp"
 #include "inventory_sink.hpp"
 #include "ipmb_reader.hpp"
@@ -438,6 +439,8 @@ class Poller
             if (presenceChange == PresenceChange::removed)
             {
                 lastProfile = StateProfile::absent;
+                // Removal terminates the open episode silently (spec §5.7.1).
+                episode.close();
                 setAllSensorsNaN();
                 for (std::size_t i = 0; i < sensorCount; ++i)
                 {
@@ -489,13 +492,13 @@ class Poller
         // result.outcome == ReadOutcome::success:
         tracker.recordSuccess();
 
+        // A successful cycle always carries a decoded STATUS_WORD.
+        const pmbus::StatusWord& status = *result.status;
         const auto prevProfile = lastProfile;
         const bool wasAbsent =
             (prevProfile == StateProfile::absent || !lastPresent);
         const bool wasCommFault = (prevProfile == StateProfile::commFault);
-        const bool wasHwFault = (prevProfile == StateProfile::hwFault);
-        const bool hasFault =
-            result.status.has_value() && result.status->hasCriticalFault();
+        const bool hasFault = status.hasCriticalFault();
 
         const auto targetProfile =
             hasFault ? StateProfile::hwFault : StateProfile::operational;
@@ -513,43 +516,32 @@ class Poller
         {
             beginAssetRefresh();
             logger.logInserted(psuName);
-            if (targetProfile == StateProfile::hwFault)
-            {
-                reportHardwareFault(*result.status);
-            }
         }
-        else if (wasCommFault)
-        {
-            logger.logRecovery(psuName, lastFaultWasInputLoss);
-            if (targetProfile == StateProfile::hwFault)
-            {
-                reportHardwareFault(*result.status);
-            }
-        }
-        else if (wasHwFault)
-        {
-            if (targetProfile == StateProfile::operational)
-            {
-                logger.logRecovery(psuName, lastFaultWasInputLoss);
-            }
-        }
-        else // wasOperational
-        {
-            if (targetProfile == StateProfile::hwFault)
-            {
-                reportHardwareFault(*result.status);
-            }
-        }
-    }
 
-    // Report one hardware fault, remembering whether the episode opened as
-    // input-power loss so the matching recovery uses PowerRestored.
-    void reportHardwareFault(const pmbus::StatusWord& status)
-    {
-        const auto faultName = psu::pmbus::firstCriticalFaultName(status);
-        lastFaultWasInputLoss =
-            (faultName == psu::event::inputPowerLossFault);
-        logger.logHardwareFault(psuName, faultName, status.raw);
+        // The episode latch, not the previous profile, decides what this cycle
+        // announces: one record when an episode opens, one when it closes
+        // (spec §5.7.1). While an episode stays open it says nothing, even if
+        // the asserted bit set changed.
+        const bool openEpisodeWasInputLoss = episode.openedAsInputPowerLoss();
+        const auto transition = episode.observe(status);
+
+        if (transition == EpisodeTransition::opened)
+        {
+            logger.logHardwareFault(psuName,
+                                    pmbus::firstCriticalFaultName(status),
+                                    status.raw);
+        }
+        else if (transition == EpisodeTransition::closed)
+        {
+            // The record matches how the episode began, not how it ended.
+            logger.logRecovery(psuName, openEpisodeWasInputLoss);
+        }
+        else if (wasCommFault && !hasFault)
+        {
+            // Leaving the communication fault with no episode in play is its
+            // own recovery; when an episode closes it already said so.
+            logger.logRecovery(psuName, false);
+        }
     }
 
     // Emit transitions once per crossing and mirror the slot's
@@ -621,6 +613,7 @@ class Poller
     int voutExponent = defaultVoutExponent;
     PresenceTracker presenceTracker;
     FailureTracker tracker;
+    FaultEpisodeTracker episode;
     WordReader& reader;
     SensorPublisher& publisher;
     psu::event::EventLogger& logger;
@@ -630,7 +623,6 @@ class Poller
     std::uint64_t assetEpoch = 0;
     bool assetResolved = false;
     bool assetReadInFlight = false;
-    bool lastFaultWasInputLoss = false;
     bool lastPresent = false;
     bool lastFunctional = false;
     bool lastAvailable = false;

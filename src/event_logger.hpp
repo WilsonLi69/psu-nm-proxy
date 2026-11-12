@@ -24,9 +24,6 @@ inline constexpr auto powerSupplyPowerLostMessage =
 inline constexpr auto powerSupplyPowerRestoredMessage =
     "OpenBMC.0.1.PowerSupplyPowerRestored";
 
-// The fault name that classifies an episode as input-power loss.
-inline constexpr std::string_view inputPowerLossFault = "VIN_UV_FAULT";
-
 // Standard phosphor-logging Entry Level strings.
 inline constexpr auto severityInformational =
     "xyz.openbmc_project.Logging.Entry.Level.Informational";

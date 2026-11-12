@@ -7,6 +7,7 @@
 #include "nm_command.hpp"
 #include "node_manager_client.hpp"
 #include "object_mapper_client.hpp"
+#include "pmbus.hpp"
 
 #include <sdbusplus/asio/connection.hpp>
 #include <sdbusplus/asio/object_server.hpp>
@@ -178,8 +179,7 @@ class DbusEventLogger : public psu::event::EventLogger
         char buf[16];
         std::snprintf(buf, sizeof(buf), "0x%04X", statusWord);
 
-        const bool inputPowerLoss =
-            faultName == psu::event::inputPowerLossFault;
+        const bool inputPowerLoss = psu::pmbus::isInputPowerLoss(faultName);
         std::string resolution = "Power supply " + psuName + " reported " +
                                  std::string(faultName) + ". ";
         resolution += inputPowerLoss
