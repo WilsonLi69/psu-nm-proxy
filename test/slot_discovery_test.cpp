@@ -4,7 +4,9 @@
 
 #include <boost/asio/io_context.hpp>
 
+#include <iostream>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -329,6 +331,62 @@ TEST(SlotDiscoveryTest, ResolvesSlotsReadsAssetsAndPublishesInventory)
               "/xyz/openbmc_project/inventory/system/chassis");
     ASSERT_EQ(sink.publishedSensorAssociations.size(), 1U);
     EXPECT_EQ(sink.publishedSensorAssociations[0].size(), 20U);
+}
+
+TEST(SlotDiscoveryTest, IgnoresDiscoveredSlotsOutsideExpectedSlots)
+{
+    boost::asio::io_context io;
+    psu::config::Config config;
+    config.expectedSlots = {1};
+    config.psuAddresses = {{1, 0xB0}};
+    config.chassisId = "chassis";
+
+    FakeNodeManagerClient nm;
+    FakeObjectMapperClient mapper;
+    FakeInventorySink sink;
+
+    nm.capabilitiesResponse = validCapabilities();
+    // D8h reports the expected Slot 1 plus a phantom Slot 2.
+    std::vector<std::uint8_t> d8(9, 0);
+    d8[1] = 0xB0;
+    d8[2] = 0xB2;
+    nm.psuConfigResponse = d8;
+    nm.assetResponses[0xB0] = std::nullopt;
+
+    mapper.pathsResponse = std::vector<std::string>{
+        "/xyz/openbmc_project/inventory/system/chassis",
+    };
+
+    auto discovery = std::make_shared<psu::discovery::SlotDiscovery>(
+        io, config, nm, mapper, sink);
+
+    std::ostringstream captured;
+    auto* previous = std::cerr.rdbuf(captured.rdbuf());
+    std::optional<psu::discovery::DiscoveryOutcome> outcome;
+    discovery->start([&outcome](psu::discovery::DiscoveryOutcome res) {
+        outcome = std::move(res);
+    });
+    std::cerr.rdbuf(previous);
+
+    ASSERT_TRUE(outcome.has_value());
+    EXPECT_EQ(outcome->status,
+              psu::discovery::DiscoveryOutcome::Status::success);
+    ASSERT_EQ(outcome->slots.size(), 1U);
+    EXPECT_EQ(outcome->slots[0].name, "PSU1");
+    EXPECT_EQ(outcome->slots[0].address8, 0xB0);
+    EXPECT_NE(captured.str().find("ignoring D8h slot 2"), std::string::npos);
+
+    ASSERT_EQ(sink.publishedInventory.size(), 1U);
+    ASSERT_EQ(sink.publishedInventory[0].size(), 1U);
+    EXPECT_EQ(sink.publishedInventory[0][0].name, "PSU1");
+
+    // Only PSU1 gets sensor associations; the phantom slot produces none.
+    ASSERT_EQ(sink.publishedSensorAssociations.size(), 1U);
+    EXPECT_EQ(sink.publishedSensorAssociations[0].size(), 10U);
+    for (const auto& path : sink.publishedSensorAssociations[0])
+    {
+        EXPECT_EQ(path.find("PSU2"), std::string::npos);
+    }
 }
 
 TEST(SlotDiscoveryTest, ReturnsSlotWithPresentFalseWhenAssetReadFails)

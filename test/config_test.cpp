@@ -247,7 +247,7 @@ TEST(ConfigResolution, ResolvesEveryDiscoveredSlotByDefault)
     EXPECT_EQ(slots[1], (ResolvedSlot{2, 0xB2, "PSU2"}));
 }
 
-TEST(ConfigResolution, ExpectedSlotsAndDiscoveryAreUnioned)
+TEST(ConfigResolution, ExpectedSlotsIgnoreExtraDiscoveredSlots)
 {
     Config cfg;
     cfg.expectedSlots = {2};
@@ -256,13 +256,13 @@ TEST(ConfigResolution, ExpectedSlotsAndDiscoveryAreUnioned)
 
     const auto slots = psu::config::resolveSlots(cfg, discovered);
 
-    ASSERT_EQ(slots.size(), 2U);
+    ASSERT_EQ(slots.size(), 1U);
     EXPECT_EQ(slots[0], (ResolvedSlot{2, 0xB2, "Right"}));
-    EXPECT_EQ(slots[1], (ResolvedSlot{1, 0xB0, "PSU1"}));
 }
 
 // An expected slot that D8h does not report falls back to config.psuAddresses
 // when configured, or has no address when neither D8h nor psuAddresses has it.
+// A discovered slot outside expectedSlots is ignored.
 TEST(ConfigResolution, ExpectedSlotNotDiscoveredIsStillRepresented)
 {
     Config cfg;
@@ -271,10 +271,22 @@ TEST(ConfigResolution, ExpectedSlotNotDiscoveredIsStillRepresented)
 
     const auto slots = psu::config::resolveSlots(cfg, discovered);
 
-    ASSERT_EQ(slots.size(), 3U);
+    ASSERT_EQ(slots.size(), 2U);
     EXPECT_EQ(slots[0], (ResolvedSlot{1, std::nullopt, "PSU1"}));
     EXPECT_EQ(slots[1], (ResolvedSlot{3, std::nullopt, "PSU3"}));
-    EXPECT_EQ(slots[2], (ResolvedSlot{2, 0xB2, "PSU2"}));
+}
+
+TEST(ConfigResolution, ExpectedSlotsKeepConfigOrderAndIgnoreExtras)
+{
+    Config cfg;
+    cfg.expectedSlots = {2, 1};
+    const std::vector<PsuSlot> discovered = {{1, 0xB0}, {2, 0xB2}, {3, 0xB4}};
+
+    const auto slots = psu::config::resolveSlots(cfg, discovered);
+
+    ASSERT_EQ(slots.size(), 2U);
+    EXPECT_EQ(slots[0], (ResolvedSlot{2, 0xB2, "PSU2"}));
+    EXPECT_EQ(slots[1], (ResolvedSlot{1, 0xB0, "PSU1"}));
 }
 
 TEST(ConfigResolution, ExpectedSlotNotInD8hUsesConfiguredPsuAddress)

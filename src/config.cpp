@@ -403,19 +403,29 @@ std::vector<ResolvedSlot>
     };
 
     std::vector<ResolvedSlot> resolved;
+    const auto append = [&resolved, &config](
+                            std::uint8_t number,
+                            std::optional<std::uint8_t> address) {
+        resolved.push_back({number, address, nameFor(config, number)});
+    };
+
+    if (config.expectedSlots.empty())
+    {
+        // No expected list: fall back to every slot D8h discovered.
+        resolved.reserve(discovered.size());
+        for (const auto& slot : discovered)
+        {
+            append(slot.number, slot.address8);
+        }
+        return resolved;
+    }
+
+    // expectedSlots is authoritative when configured: D8h only supplies the
+    // addresses, and discovered slots outside expectedSlots are ignored.
+    resolved.reserve(config.expectedSlots.size());
     for (const auto number : config.expectedSlots)
     {
-        resolved.push_back(
-            {number, addressFor(number), nameFor(config, number)});
-    }
-    for (const auto& slot : discovered)
-    {
-        if (std::find(config.expectedSlots.begin(), config.expectedSlots.end(),
-                      slot.number) == config.expectedSlots.end())
-        {
-            resolved.push_back(
-                {slot.number, slot.address8, nameFor(config, slot.number)});
-        }
+        append(number, addressFor(number));
     }
     return resolved;
 }

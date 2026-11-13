@@ -25,10 +25,10 @@ inline constexpr std::size_t defaultFailuresBeforeNotFunctional = 3;
 std::vector<std::string> defaultSensorWhitelist();
 
 // Resolved configuration. Omitted fields keep their defaults: psuNames is empty
-// (each slot falls back to "PSU<slot>"), expectedSlots is empty (all discovered
-// slots), chassisId is empty (the sole Board/Chassis object is used when there
-// is exactly one), sensorWhitelist is the full §8 set, pollIntervalMs 1000,
-// and failuresBeforeNotFunctional 3.
+// (each slot falls back to "PSU<slot>"), expectedSlots is empty (an omitted or
+// invalid field falls back to all discovered slots), chassisId is empty (the
+// sole Board/Chassis object is used when there is exactly one), sensorWhitelist
+// is the full §8 set, pollIntervalMs 1000, and failuresBeforeNotFunctional 3.
 struct Config
 {
     std::map<std::uint8_t, std::string> psuNames;
@@ -58,9 +58,9 @@ std::string nameFor(const Config& config, std::uint8_t slot);
 // (a slot with no configured address is 0).
 std::array<std::uint8_t, 8> psuAddressBytes(const Config& config);
 
-// One PSU slot to publish, from the union of the configured expectedSlots and
-// the slots D8h discovered. An expected slot D8h did not report falls back to
-// its configured psuAddresses entry when present (spec §5.6).
+// One PSU slot to publish. A non-empty expectedSlots is authoritative and D8h
+// only supplies addresses; an expected slot D8h did not report falls back to
+// its configured psuAddresses entry when present (spec §5.1.2).
 struct ResolvedSlot
 {
     std::uint8_t number;
@@ -70,9 +70,10 @@ struct ResolvedSlot
     bool operator==(const ResolvedSlot&) const = default;
 };
 
-// Union the expected slots with the D8h-discovered slots: every expected slot
-// is represented (expected slots first, in config order), then any discovered
-// slot not in expectedSlots. The name comes from nameFor (spec §6).
+// Resolve the slots to provision. With a non-empty expectedSlots, return only
+// those slots in config order; D8h-discovered slots outside expectedSlots are
+// ignored. With an empty expectedSlots, return every D8h-discovered slot. The
+// name comes from nameFor (spec §6).
 std::vector<ResolvedSlot>
     resolveSlots(const Config& config,
                  const std::vector<psu::nm::PsuSlot>& discovered);

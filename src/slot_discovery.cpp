@@ -3,6 +3,7 @@
 #include "nm_command.hpp"
 #include "sensor_set.hpp"
 
+#include <algorithm>
 #include <exception>
 #include <iostream>
 #include <utility>
@@ -125,8 +126,24 @@ void SlotDiscovery::onPsuConfigRead(NodeManagerClient::Response psuConfig)
 void SlotDiscovery::onPsuConfigResolved(
     const std::vector<std::uint8_t>& psuConfig)
 {
-    const auto resolved =
-        psu::config::resolveSlots(config, psu::nm::psuSlots(psuConfig));
+    const auto discovered = psu::nm::psuSlots(psuConfig);
+    const auto resolved = psu::config::resolveSlots(config, discovered);
+
+    for (const auto& slot : discovered)
+    {
+        const bool provisioned = std::any_of(
+            resolved.begin(), resolved.end(),
+            [&slot](const psu::config::ResolvedSlot& entry) {
+                return entry.number == slot.number;
+            });
+        if (!provisioned)
+        {
+            std::cerr << "psu-nm-proxy: ignoring D8h slot "
+                      << static_cast<int>(slot.number) << " at 0x" << std::hex
+                      << static_cast<int>(slot.address8) << std::dec
+                      << " (not provisioned)\n";
+        }
+    }
 
     inventory.clear();
     activeSlots.clear();
